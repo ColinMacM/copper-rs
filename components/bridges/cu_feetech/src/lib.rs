@@ -89,6 +89,26 @@ const MAX_STATUS_PACKET_SIZE: usize = 64;
 #[allow(dead_code)]
 const BROADCAST_ID: u8 = 0xFE;
 
+/// Status-packet error bits that mean the servo is protecting itself or is out of spec:
+/// input voltage (0x01), over-temperature (0x04), over-current (0x08) and overload (0x20).
+/// Any of them cuts torque on the whole bus and latches a fault.
+const PROTECTIVE_ERRORS: u8 = 0x01 | 0x04 | 0x08 | 0x20;
+
+/// Counters kept by the bridge; read them with [`FeetechBridge::stats`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FeetechStats {
+    /// Position reads that failed (timeout, bad checksum, bad header).
+    pub read_failures: u64,
+    /// Status packets that carried a non-zero error byte.
+    pub servo_errors: u64,
+    /// Goal messages refused because a value was not finite or the bridge was faulted.
+    pub goals_rejected: u64,
+    /// Goal values pulled back to the calibrated range.
+    pub goals_clamped: u64,
+    /// Times the goal timeout commanded a hold at the present position.
+    pub holds: u64,
+}
+
 /// Instruction bytes recognised by STS/SCS servos.
 #[allow(dead_code)]
 mod instr {
@@ -234,6 +254,34 @@ pub struct FeetechBridge {
     /// Per-servo half-range (max - min) / 2 for normalize unit. Only used when `units == Normalize`.
     #[reflect(ignore)]
     half_ranges: [f32; MAX_SERVOS],
+
+    /// Raw goal limits per servo slot: the calibrated `min..=max` when a calibration is loaded,
+    /// otherwise the whole 16-bit register.
+    #[reflect(ignore)]
+    limits: [(u16, u16); MAX_SERVOS],
+
+    /// Commands a hold at the present position when no goal arrived for this long (ns).
+    /// `None` leaves the servos on their last goal.
+    goal_timeout_ns: Option<u64>,
+
+    /// Robot time of the last accepted goal (ns).
+    last_goal_ns: Option<u64>,
+
+    /// A hold was commanded since the last accepted goal.
+    holding: bool,
+
+    /// This bridge enabled torque and has not yet disabled it.
+    torque_on: bool,
+
+    /// Set by a protective servo error; blocks goals and measurements until the bridge restarts.
+    #[reflect(ignore)]
+    fault: Option<String>,
+
+    /// Every position read of the last `read_all_positions` succeeded.
+    read_ok: bool,
+
+    #[reflect(ignore)]
+    stats: FeetechStats,
 }
 
 impl Freezable for FeetechBridge {
@@ -357,16 +405,23 @@ impl FeetechBridge {
     }
 
     /// Read `count` bytes starting at `address` from a single servo.
+    ///
+    /// Returns the status error byte with the data; callers decide what an error means.
     fn read_register(
         &mut self,
         id: u8,
         address: u8,
         count: u8,
-    ) -> io::Result<HeaplessVec<u8, MAX_STATUS_PACKET_SIZE>> {
+    ) -> io::Result<(u8, HeaplessVec<u8, MAX_STATUS_PACKET_SIZE>)> {
         // READ instruction params: [start_address, byte_count].
         self.send_packet(id, instr::READ, &[address, count])?;
-        let (_id, _error, data) = self.read_status_packet()?;
-        Ok(data)
+        let (resp_id, error, data) = self.read_status_packet()?;
+        if resp_id != id {
+            return Err(io::Error::other(format!(
+                "Feetech: asked servo {id} but servo {resp_id} answered"
+            )));
+        }
+        Ok((error, data))
     }
 
     /// Write `data` starting at `address` to a single servo.
@@ -388,9 +443,10 @@ impl FeetechBridge {
 
     /// Read the raw present position (2 bytes, little-endian) from one servo.
     ///
-    /// Returns a value in 0..65535 (16-bit register).
+    /// Returns a value in 0..65535 (16-bit register). A status error byte is counted; a
+    /// protective one also cuts torque on the bus and latches a fault.
     fn read_present_position(&mut self, id: u8) -> CuResult<u16> {
-        let data = self
+        let (error, data) = self
             .read_register(id, reg::PRESENT_POSITION, 2)
             .map_err(|e| {
                 CuError::new_with_cause(
@@ -398,6 +454,15 @@ impl FeetechBridge {
                     e,
                 )
             })?;
+        if error != 0 {
+            self.stats.servo_errors += 1;
+            if error & PROTECTIVE_ERRORS != 0 {
+                self.latch_fault(format!(
+                    "servo {id} reported protective error 0x{error:02X} (voltage 0x01, temperature 0x04, current 0x08, overload 0x20)"
+                ));
+                return Err(format!("Feetech: servo {id} reported error 0x{error:02X}").into());
+            }
+        }
         if data.len() < 2 {
             return Err(format!(
                 "Feetech: short read for position from servo {} (got {} bytes)",
@@ -409,23 +474,85 @@ impl FeetechBridge {
         Ok(u16::from_le_bytes([data[0], data[1]]))
     }
 
+    /// Cuts torque on every servo and refuses goals and measurements until restart.
+    fn latch_fault(&mut self, reason: String) {
+        if self.fault.is_none() {
+            for i in 0..self.num_servos as usize {
+                let _ = self.set_torque(self.ids[i], false);
+            }
+            self.torque_on = false;
+            self.fault = Some(reason);
+        }
+    }
+
     /// Poll present positions from every configured servo into `cached_positions`.
     ///
-    /// On a read failure for any individual servo the previously cached value
-    /// is kept and a debug message is logged — the bus continues with the
-    /// remaining servos.
-    fn read_all_positions(&mut self, ctx: &CuContext) -> CuResult<()> {
+    /// Reads every servo once; returns the text of the last failure, if any.
+    fn poll_positions(&mut self) -> Option<String> {
+        self.read_ok = true;
+        let mut failure = None;
         for i in 0..self.num_servos as usize {
             match self.read_present_position(self.ids[i]) {
                 Ok(raw) => self.cached_positions[i] = raw,
                 Err(e) => {
-                    debug!(
-                        ctx,
-                        "Feetech: failed to read servo {} (ID {}): {}", i, self.ids[i], e
-                    );
+                    self.read_ok = false;
+                    self.stats.read_failures += 1;
+                    failure = Some(format!(
+                        "failed to read servo {} (ID {}): {}",
+                        i, self.ids[i], e
+                    ));
                 }
             }
         }
+        failure
+    }
+
+    /// One receive cycle: poll, hold if a goal is overdue, and return the published positions
+    /// (`None` when this cycle has no valid measurement) with the text of any read failure.
+    fn cycle_receive(&mut self, now_ns: u64) -> (Option<JointPositions>, Option<String>) {
+        let failure = self.poll_positions();
+        self.hold_if_goal_overdue(now_ns);
+        (self.measurement(), failure)
+    }
+
+    fn measurement(&self) -> Option<JointPositions> {
+        if !self.read_ok || self.fault.is_some() {
+            return None;
+        }
+        let mut payload = JointPositions::new();
+        payload.fill_from_iter(
+            self.cached_positions[..self.num_servos as usize]
+                .iter()
+                .enumerate()
+                .map(|(i, &raw)| {
+                    self.units
+                        .from_raw(raw, self.centers[i], self.param_for_slot(i))
+                }),
+        );
+        Some(payload)
+    }
+
+    /// One send cycle: validate and write a goal message.
+    fn cycle_send(&mut self, now_ns: u64, positions: &JointPositions) -> CuResult<()> {
+        self.sync_write_positions(positions)?;
+        self.last_goal_ns = Some(now_ns);
+        self.holding = false;
+        Ok(())
+    }
+
+    /// Start-up sequence for commander mode: goal := present position, then torque on.
+    fn begin(&mut self) -> CuResult<()> {
+        let _ = self.poll_positions();
+        if !self.read_ok {
+            return Err(
+                "FeetechBridge: a servo could not be read, so torque was not enabled".into(),
+            );
+        }
+        let n = self.num_servos as usize;
+        let present = self.cached_positions;
+        self.write_goals_raw(&present[..n])?;
+        self.enable_all_torque()?;
+        self.torque_on = true;
         Ok(())
     }
 
@@ -440,6 +567,10 @@ impl FeetechBridge {
     /// [start_address] [bytes_per_servo] [ID_0] [lo_0] [hi_0] [ID_1] …
     /// ```
     fn sync_write_positions(&mut self, positions: &JointPositions) -> CuResult<()> {
+        if let Some(reason) = &self.fault {
+            self.stats.goals_rejected += 1;
+            return Err(format!("Feetech: goals refused, bridge is faulted: {reason}").into());
+        }
         let vals = positions.as_slice();
         // Write at most as many servos as we have configured, even if the
         // payload carries fewer (or more) entries.
@@ -447,7 +578,34 @@ impl FeetechBridge {
         if n == 0 {
             return Ok(());
         }
+        // A NaN would saturate to raw position 0 in the conversion below and drive the joint
+        // to the end of its travel, so any non-finite value refuses the whole message.
+        if let Some(i) = vals[..n].iter().position(|v| !v.is_finite()) {
+            self.stats.goals_rejected += 1;
+            return Err(format!(
+                "Feetech: goal for servo {} is {}; nothing was written",
+                self.ids[i], vals[i]
+            )
+            .into());
+        }
 
+        let mut raws = [0u16; MAX_SERVOS];
+        for (i, val) in vals.iter().enumerate().take(n) {
+            let param = self.param_for_slot(i);
+            let raw = self.units.to_raw(*val, self.centers[i], param);
+            let (lo, hi) = self.limits[i];
+            let bounded = raw.clamp(lo, hi);
+            if bounded != raw {
+                self.stats.goals_clamped += 1;
+            }
+            raws[i] = bounded;
+        }
+        self.write_goals_raw(&raws[..n])
+    }
+
+    /// Sync-write raw goal ticks for the first `raws.len()` servos.
+    fn write_goals_raw(&mut self, raws: &[u16]) -> CuResult<()> {
+        let n = raws.len();
         let data_len_per_servo: u8 = 2; // 2 bytes for GOAL_POSITION
         // Max params: 2 (start addr + len) + MAX_SERVOS*3 (ID + 2 bytes data) = 26 bytes
         let params_size = 2 + n * 3;
@@ -458,9 +616,7 @@ impl FeetechBridge {
         params[0] = reg::GOAL_POSITION; // start address
         params[1] = data_len_per_servo;
         let mut offset = 2;
-        for (i, val) in vals.iter().enumerate().take(n) {
-            let param = self.param_for_slot(i);
-            let raw = self.units.to_raw(*val, self.centers[i], param);
+        for (i, raw) in raws.iter().enumerate() {
             params[offset] = self.ids[i]; // servo ID
             params[offset + 1] = (raw & 0xFF) as u8; // position low byte
             params[offset + 2] = (raw >> 8) as u8; // position high byte
@@ -470,6 +626,37 @@ impl FeetechBridge {
         self.send_packet(BROADCAST_ID, instr::SYNC_WRITE, &params[..params_size])
             .map_err(|e| CuError::new_with_cause("Feetech: sync-write failed", e))?;
         Ok(())
+    }
+
+    /// Counters for read failures, servo errors, rejected and clamped goals, and holds.
+    #[must_use]
+    pub fn stats(&self) -> FeetechStats {
+        self.stats
+    }
+
+    /// The reason the bridge refused goals, if a protective servo error latched a fault.
+    #[must_use]
+    pub fn fault(&self) -> Option<&str> {
+        self.fault.as_deref()
+    }
+
+    /// Commands the present position as the goal once, if a goal timeout is configured and no
+    /// goal arrived in time.
+    fn hold_if_goal_overdue(&mut self, now_ns: u64) {
+        let (Some(limit), Some(last)) = (self.goal_timeout_ns, self.last_goal_ns) else {
+            return;
+        };
+        if self.holding || !self.torque_on || self.fault.is_some() || !self.read_ok {
+            return;
+        }
+        if now_ns.saturating_sub(last) > limit {
+            let n = self.num_servos as usize;
+            let cached = self.cached_positions;
+            if self.write_goals_raw(&cached[..n]).is_ok() {
+                self.holding = true;
+                self.stats.holds += 1;
+            }
+        }
     }
 
     /// Enable or disable torque on a single servo.
@@ -527,6 +714,7 @@ impl CuBridge for FeetechBridge {
     /// | `units`            | string | `"raw"` (default), `"deg"`, `"rad"`, or `"normalize"` |
     /// | `calibration_file` | string | Path to calibration JSON (required for deg/rad/normalize) |
     /// | `ticks_per_rev`    | integer | Raw units per 360° (model-dependent; default 4096) |
+    /// | `goal_timeout_ms`  | integer | Hold the present position when no goal arrived for this long (default off) |
     ///
     /// At least `servo0` must be present.
     fn new(
@@ -571,13 +759,20 @@ impl CuBridge for FeetechBridge {
             None => Units::Raw,
         };
 
-        // ---- Load calibration (required for deg / rad / normalize) ----
+        // ---- Load calibration (required for deg / rad / normalize, optional for raw) ----
         let mut centers = [0.0f32; MAX_SERVOS];
         let mut half_ranges = [0.0f32; MAX_SERVOS];
-        if units != Units::Raw {
-            let cal_path = cfg
-                .get::<String>("calibration_file")?
-                .ok_or("FeetechBridge: \"calibration_file\" is required when units != raw")?;
+        let mut limits = [(0u16, u16::MAX); MAX_SERVOS];
+        let cal_path = match cfg.get::<String>("calibration_file")? {
+            Some(path) => Some(path),
+            None if units != Units::Raw => {
+                return Err(
+                    "FeetechBridge: \"calibration_file\" is required when units != raw".into(),
+                );
+            }
+            None => None,
+        };
+        if let Some(cal_path) = cal_path {
             let cal = CalibrationData::load(std::path::Path::new(&cal_path)).map_err(|e| {
                 CuError::new_with_cause(
                     &format!("FeetechBridge: failed to load calibration from \"{cal_path}\""),
@@ -585,6 +780,9 @@ impl CuBridge for FeetechBridge {
                 )
             })?;
             for i in 0..num_servos as usize {
+                if let Some(entry) = cal.servos.iter().find(|s| s.id == ids[i]) {
+                    limits[i] = (entry.min, entry.max);
+                }
                 centers[i] = cal.center_for(ids[i]).ok_or_else(|| {
                     CuError::from(format!(
                         "FeetechBridge: no calibration entry for servo ID {} in \"{cal_path}\"",
@@ -605,6 +803,11 @@ impl CuBridge for FeetechBridge {
         // ---- Ticks per revolution (model-dependent; used for deg/rad) ----
         let ticks_per_rev = cfg.get::<u32>("ticks_per_rev")?.unwrap_or(4096);
 
+        let goal_timeout_ns = match cfg.get::<u64>("goal_timeout_ms")? {
+            Some(0) | None => None,
+            Some(ms) => Some(ms.saturating_mul(1_000_000)),
+        };
+
         let port = resources.serial.0;
 
         // If no Tx channels are wired up in this mission, nobody will send
@@ -621,6 +824,14 @@ impl CuBridge for FeetechBridge {
             centers,
             ticks_per_rev,
             half_ranges,
+            limits,
+            goal_timeout_ns,
+            last_goal_ns: None,
+            holding: false,
+            torque_on: false,
+            fault: None,
+            read_ok: true,
+            stats: FeetechStats::default(),
         })
     }
 
@@ -630,7 +841,10 @@ impl CuBridge for FeetechBridge {
     /// In follower mode torque stays off so the arm moves freely.
     fn start(&mut self, ctx: &CuContext) -> CuResult<()> {
         if self.has_writers {
-            self.enable_all_torque()?;
+            // A servo moves to whatever its goal register holds the moment torque comes on,
+            // and that is a value from a previous session, so the goal is set to the present
+            // position first. If any servo cannot be read, torque stays off.
+            self.begin()?;
             debug!(
                 ctx,
                 "FeetechBridge: enabled torque on {} servos", self.num_servos
@@ -649,7 +863,7 @@ impl CuBridge for FeetechBridge {
     /// For `goal_positions`: sync-writes the raw positions to the servo bus.
     fn send<'a, Payload>(
         &mut self,
-        _ctx: &CuContext,
+        ctx: &CuContext,
         channel: &'static BridgeChannel<<Self::Tx as BridgeChannelSet>::Id, Payload>,
         msg: &CuMsg<Payload>,
     ) -> CuResult<()>
@@ -660,7 +874,7 @@ impl CuBridge for FeetechBridge {
             TxId::GoalPositions => {
                 let goal_msg: &CuMsg<JointPositions> = msg.downcast_ref()?;
                 if let Some(positions) = goal_msg.payload() {
-                    self.sync_write_positions(positions)?;
+                    self.cycle_send(ctx.now().as_nanos(), positions)?;
                 }
             }
         }
@@ -680,28 +894,30 @@ impl CuBridge for FeetechBridge {
     where
         Payload: CuMsgPayload + 'a,
     {
-        // Poll all servos and update the cache.
-        self.read_all_positions(ctx)?;
-
-        // Stamp the message with the current robot time.
-        msg.tov = Tov::Time(ctx.now());
-
-        match channel.id() {
-            RxId::Positions => {
-                // Build the payload, converting each raw position to the
-                // configured output unit (raw / deg / rad).
-                let mut payload = JointPositions::new();
-                payload.fill_from_iter(
-                    self.cached_positions[..self.num_servos as usize]
-                        .iter()
-                        .enumerate()
-                        .map(|(i, &raw)| {
-                            self.units
-                                .from_raw(raw, self.centers[i], self.param_for_slot(i))
-                        }),
+        let now = ctx.now();
+        msg.tov = Tov::Time(now);
+        let (measurement, failure) = self.cycle_receive(now.as_nanos());
+        if let Some(message) = failure {
+            // Logged on the first failure and every hundredth after, so a dead bus is visible
+            // without flooding the log.
+            if self.stats.read_failures == 1 || self.stats.read_failures.is_multiple_of(100) {
+                warning!(
+                    ctx,
+                    "Feetech: {} ({} failures so far)",
+                    message.as_str(),
+                    self.stats.read_failures
                 );
+            }
+        }
+        match channel.id() {
+            // No measurement this cycle if any servo could not be read or the bridge is
+            // faulted: a cached position under a fresh timestamp would look like a reading.
+            RxId::Positions => {
                 let pos_msg: &mut CuMsg<JointPositions> = msg.downcast_mut()?;
-                pos_msg.set_payload(payload);
+                match measurement {
+                    Some(payload) => pos_msg.set_payload(payload),
+                    None => pos_msg.clear_payload(),
+                }
             }
         }
         Ok(())
@@ -712,16 +928,7 @@ impl CuBridge for FeetechBridge {
     /// Disables torque on every servo for safety (prevents the arm from
     /// holding position with power applied after the application exits).
     fn stop(&mut self, ctx: &CuContext) -> CuResult<()> {
-        for i in 0..self.num_servos as usize {
-            if let Err(e) = self.set_torque(self.ids[i], false) {
-                debug!(
-                    ctx,
-                    "FeetechBridge: failed to disable torque on servo {}: {}",
-                    self.ids[i],
-                    e.to_string()
-                );
-            }
-        }
+        self.release_torque();
         debug!(
             ctx,
             "FeetechBridge: disabled torque on {} servos", self.num_servos
@@ -730,9 +937,70 @@ impl CuBridge for FeetechBridge {
     }
 }
 
+#[cfg(test)]
+impl FeetechBridge {
+    /// A bridge on a fake bus, for tests; mirrors what `new` builds from configuration.
+    pub(crate) fn for_test(
+        port: Box<dyn serialport::SerialPort>,
+        ids: &[u8],
+        has_writers: bool,
+        limits: (u16, u16),
+        goal_timeout_ms: Option<u64>,
+    ) -> Self {
+        let mut id_arr = [0u8; MAX_SERVOS];
+        id_arr[..ids.len()].copy_from_slice(ids);
+        FeetechBridge {
+            port: LinuxSerialPort::new(port),
+            ids: id_arr,
+            num_servos: ids.len() as u8,
+            has_writers,
+            cached_positions: [0; MAX_SERVOS],
+            units: Units::Raw,
+            centers: [0.0; MAX_SERVOS],
+            ticks_per_rev: 4096,
+            half_ranges: [0.0; MAX_SERVOS],
+            limits: [limits; MAX_SERVOS],
+            goal_timeout_ns: goal_timeout_ms.map(|m| m * 1_000_000),
+            last_goal_ns: None,
+            holding: false,
+            torque_on: false,
+            fault: None,
+            read_ok: true,
+            stats: FeetechStats::default(),
+        }
+    }
+}
+
+impl FeetechBridge {
+    /// Best-effort torque off on every servo; errors cannot be reported from here.
+    fn release_torque(&mut self) {
+        for i in 0..self.num_servos as usize {
+            let _ = self.set_torque(self.ids[i], false);
+        }
+        self.torque_on = false;
+    }
+}
+
+impl Drop for FeetechBridge {
+    /// Runs on a normal drop and while a panic unwinds, so a graph that panics does not leave
+    /// the arm holding its last goal. A killed process (SIGKILL, power loss) still leaves the
+    /// servos as they were: that needs a hardware cutoff.
+    fn drop(&mut self) {
+        if self.torque_on {
+            self.release_torque();
+        }
+    }
+}
+
 // ===========================================================================
 // Tests
 // ===========================================================================
+
+#[cfg(test)]
+mod testbus;
+
+#[cfg(test)]
+mod hardening;
 
 #[cfg(test)]
 mod tests {

@@ -30,5 +30,8 @@ serde_json = { workspace = true }
 cu-linux-resources = { workspace = true }
 heapless = { workspace = true }
 
+[dev-dependencies]
+serialport = { workspace = true }
+
 [build-dependencies]
 cu29-build = { workspace = true }
