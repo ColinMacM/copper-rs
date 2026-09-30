@@ -1,0 +1,55 @@
+(
+    tasks: [
+        (id: "camera", type: "tasks::SyntheticCamera"),
+        (id: "obs", type: "tasks::ObsBuilder"),
+        (id: "status_probe", type: "tasks::StatusProbe"),
+        (id: "chunk_probe", type: "tasks::ChunkProbe"),
+        (
+            id: "gov",
+            type: "cu_action_governor::ActionGovernor",
+            config: {
+                "min_0": 200.0, "max_0": 3900.0,
+                "min_1": 200.0, "max_1": 3900.0,
+                "min_2": 200.0, "max_2": 3900.0,
+                "min_3": 200.0, "max_3": 3900.0,
+                "min_4": 200.0, "max_4": 3900.0,
+                "min_5": 200.0, "max_5": 3900.0,
+                "max_step": 30.0,
+                "max_lead": 300.0,
+                "max_age_ms": 600.0,
+                "hold_deadline_ms": 500.0,
+                "cycle_ms": 33.333,
+            },
+        ),
+    ],
+    bridges: [
+        (
+            id: "arm",
+            type: "bridges::MockArm",
+            config: {"start": 2048.0, "slew": 40.0},
+            channels: [Rx(id: "positions"), Tx(id: "goals")],
+        ),
+        (
+            id: "link",
+            type: "bridges::PolicyLink",
+            channels: [
+                Tx(id: "obs", route: "vla/obs"),
+                Tx(id: "img", route: "vla/img"),
+                Rx(id: "action", route: "vla/action"),
+                Rx(id: "status", route: "vla/link_status"),
+            ],
+        ),
+    ],
+    cnx: [
+        (src: "arm/positions", dst: "obs", msg: "cu_action_governor::JointPositions"),
+        (src: "obs", dst: "link/obs", msg: "cu_action_governor::ObsPacket"),
+        (src: "link/action", dst: "gov", msg: "cu_action_governor::ActionChunk"),
+        (src: "arm/positions", dst: "gov", msg: "cu_action_governor::JointPositions"),
+        (src: "obs", dst: "gov", msg: "cu_action_governor::ObsStamp"),
+        (src: "link/action", dst: "chunk_probe", msg: "cu_action_governor::ActionChunk"),
+        (src: "camera", dst: "link/img", msg: "cu_sensor_payloads::CuImage<Vec<u8>>"),
+        (src: "link/status", dst: "status_probe", msg: "cu_policy_link::LinkStatus"),
+        (src: "gov", dst: "arm/goals", msg: "cu_action_governor::JointPositions"),
+    ],
+    logging: (slab_size_mib: 64, section_size_mib: 16, keyframe_interval: 30),
+)

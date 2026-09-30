@@ -1,0 +1,39 @@
+[package]
+name = "cu-action-governor"
+description = "Copper task that gates a remote policy's action chunks before they reach an arm: rejects bad chunks, clamps, rate-limits and holds."
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+keywords.workspace = true
+categories.workspace = true
+homepage.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/cu-action-governor"
+
+[package.metadata.copper]
+kind = "task"
+domains = ["algorithm/control"]
+environments = ["host"]
+
+[features]
+# Deterministic synthetic sources and sink used by this crate's tests and benchmarks.
+testkit = []
+
+[dependencies]
+cu29 = { workspace = true, features = ["reflect"] }
+serde = { workspace = true }
+bincode = { workspace = true }
+
+[dev-dependencies]
+cu-action-governor = { path = ".", features = ["testkit"] }
+cu29-export = { workspace = true }
+cu29-unifiedlog = { workspace = true }
+tempfile = { workspace = true }
+
+[build-dependencies]
+cu29-build = { workspace = true }
+
+[package.metadata.cargo-shear]
+ignored = ["serde", "bincode"]
