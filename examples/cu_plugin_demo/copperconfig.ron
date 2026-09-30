@@ -1,0 +1,23 @@
+(
+    tasks: [
+        (id: "ticker", type: "tasks::Ticker"),
+        (id: "collector", type: "tasks::Collector"),
+    ],
+    cnx: [
+        (src: "ticker", dst: "smooth_average", msg: "cu_demo_smoothing::Sample"),
+        (src: "smooth_limit", dst: "collector", msg: "cu_demo_smoothing::Smoothed"),
+    ],
+    plugins: [
+        (
+            path: "smoothing/plugin",
+            fragment: "moving_average",
+            instance: "smooth",
+            params: {
+                "window": 3,
+                "gain": 2.0,
+                "label": "demo",
+            },
+            pin: "blake3:4de452b52939ab224907809c519dec97d0c58e935c7e66ac950c95d5dd5d8b59",
+        ),
+    ],
+)

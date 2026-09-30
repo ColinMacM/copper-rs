@@ -1,0 +1,23 @@
+(
+    tasks: [
+        (
+            id: "{{instance}}_average",
+            type: "cu_demo_smoothing::MovingAverage",
+            config: {
+                "window": {{window}},
+                "gain": {{gain}},
+                "label": "{{label}}",
+            },
+        ),
+        (
+            id: "{{instance}}_limit",
+            type: "cu_demo_smoothing::Limit",
+            config: {
+                "max_value": {{max_value}},
+            },
+        ),
+    ],
+    cnx: [
+        (src: "{{instance}}_average", dst: "{{instance}}_limit", msg: "cu_demo_smoothing::Smoothed"),
+    ],
+)

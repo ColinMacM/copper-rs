@@ -8,6 +8,7 @@ members = [
 
   "core/cu29",
   "core/cu29_build",
+  "core/cu29_plugin",
   "core/cu29_base_derive",
   "core/cu29_reflect_derive",
   "core/cu29_clock",
@@ -127,6 +128,8 @@ members = [
   "examples/cu_pointclouds",
   "examples/cu_peer_triangulation",
   "examples/cu_python_task_demo",
+  "examples/cu_plugin_demo",
+  "examples/cu_plugin_demo/smoothing",
   "examples/cu_run_in_sim",
   "examples/cu_rp_balancebot",
   "examples/cu_standalone_structlog",
@@ -139,6 +142,7 @@ members = [
   "examples/cu_remote_debug_session",
   "examples/cu_ryuw122_probe",
   "support/cargo_cunew",
+  "support/cu_plugin",
 ]
 
 # put only the core crates here that are not platform specific
@@ -153,6 +157,7 @@ default-members = [
   "core/cu29_log_derive",
   "core/cu29_log_runtime",
   "core/cu29_logstream",
+  "core/cu29_plugin",
   "core/cu29_runtime",
   "core/cu29_soa_derive",
   "core/cu29_traits",
@@ -237,6 +242,7 @@ cu-serial-bridge = { path = "components/bridges/cu_serial_bridge", version = "1.
 # Copper Core
 cu29 = { path = "core/cu29", version = "1.3.0-dev" } # default std
 cu29-build = { path = "core/cu29_build", version = "1.3.0-dev" }
+cu29-plugin = { path = "core/cu29_plugin", version = "1.3.0-dev", default-features = false } # std only
 cu29-reflect-derive = { path = "core/cu29_reflect_derive", version = "1.3.0-dev" }
 cu29-clock = { path = "core/cu29_clock", default-features = false, version = "1.3.0-dev" }
 cu29-derive = { path = "core/cu29_derive", default-features = false, version = "1.3.0-dev" }

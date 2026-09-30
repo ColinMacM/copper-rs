@@ -181,6 +181,43 @@ graph-view-check:
 	cargo +stable clippy -p cu29-graph-view -p cu29-schedule-view -- --deny warnings
 	cargo +stable test -p cu29-graph-view -p cu29-schedule-view
 
+# Static plugins: manifests, expansion, pins, the cu-plugin tool and the end-to-end demo.
+plugin-check:
+	cargo +stable clippy -p cu29-plugin -p cu-plugin -p cu-demo-smoothing -p cu-plugin-demo --all-targets -- --deny warnings
+	cargo +stable test -p cu29-plugin -p cu-plugin -p cu-plugin-demo
+	cargo +stable test -p cu29-runtime --test plugins
+
+# Create a plugin directory with a manifest and a fragment: just plugin-new pid_loop [dir]
+plugin-new name dir="plugins":
+	cargo +stable run -q -p cu-plugin -- new {{name}} --dir {{dir}}
+
+# Show a plugin's parameters, fragments, public nodes, assets and pin: just plugin-describe plugins/pid_loop
+plugin-describe path:
+	cargo +stable run -q -p cu-plugin -- describe {{path}}
+
+# Render every fragment of a plugin with default or sample values: just plugin-validate plugins/pid_loop
+plugin-validate path:
+	cargo +stable run -q -p cu-plugin -- check {{path}}
+
+# Print the pin for an application's `plugins` entry: just plugin-pin plugins/pid_loop
+plugin-pin path:
+	cargo +stable run -q -p cu-plugin -- pin {{path}}
+
+# Print nodes, connections and plugin instances of an application: just plugin-expand examples/cu_plugin_demo/copperconfig.ron
+plugin-expand config:
+	cargo +stable run -q -p cu-plugin -- expand {{config}} --summary
+
+# Run the application built from the smoothing plugin.
+plugin-demo:
+	cd examples/cu_plugin_demo && cargo +stable run -q -p cu-plugin-demo
+
+# Policy-driven arm loop: governor, policy link, hardened feetech bridge, end-to-end with a Python policy.
+vla-loop-check:
+	cargo +stable clippy -p cu-action-governor -p cu-policy-link -p cu-vla-loop -p cu-feetech --all-targets -- --deny warnings
+	cargo +stable test -p cu-action-governor -p cu-policy-link -p cu-feetech
+	cargo +stable test -p cu-vla-loop -- --test-threads=1
+	cd examples/cu_vla_loop/python && python3 -m pytest -q tests
+
 # UDP carrier contracts and generated sender/session-router localhost integration.
 logstream-udp-check:
 	cargo +stable clippy -p cu29-logstream-udp --all-targets --features runtime-integration -- --deny warnings

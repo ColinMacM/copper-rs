@@ -1628,6 +1628,11 @@ pub struct CuConfig {
     pub bridges: Vec<BridgeConfig>,
     /// Graph structure - either a single graph or multiple mission-specific graphs
     pub graphs: ConfigGraphs,
+    /// The plugin instances expanded into this configuration. Written into the effective
+    /// configuration so a recorded run identifies the plugin content that produced it.
+    #[cfg(feature = "std")]
+    #[doc(hidden)]
+    pub plugins: Vec<cu29_plugin::Provenance>,
 }
 
 /// Every reconstructed node needs recorded or reconstructed inputs. Checking
@@ -2452,6 +2457,31 @@ struct CuConfigRepresentation {
     runtime: Option<RuntimeConfig>,
     missions: Option<Vec<MissionsConfig>>,
     includes: Option<Vec<IncludesConfig>>,
+    #[cfg(feature = "std")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    plugins: Option<Vec<PluginConfig>>,
+    /// The expanded plugin instances, kept so the resolved configuration identifies them.
+    #[cfg(feature = "std")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    resolved_plugins: Option<Vec<cu29_plugin::Provenance>>,
+}
+
+/// One `plugins` entry of an application configuration. See `doc/static-plugins.md`.
+#[cfg(feature = "std")]
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
+struct PluginConfig {
+    path: String,
+    fragment: String,
+    instance: String,
+    #[serde(default)]
+    params: BTreeMap<String, cu29_plugin::ParamValue>,
+    #[serde(default)]
+    pin: Option<String>,
+    #[serde(default)]
+    dev: bool,
+    #[serde(default)]
+    when: Option<ConfigPredicate>,
 }
 
 #[derive(Deserialize)]
@@ -2482,6 +2512,10 @@ where
     E: From<String>,
 {
     let mut cuconfig = CuConfig::default();
+    #[cfg(feature = "std")]
+    {
+        cuconfig.plugins = representation.resolved_plugins.clone().unwrap_or_default();
+    }
     let bridge_lookup = build_bridge_lookup(representation.bridges.as_ref());
 
     if let Some(mission_configs) = &representation.missions {
@@ -2776,6 +2810,10 @@ impl Serialize for CuConfig {
                     log_streaming: self.log_streaming.clone(),
                     missions: None,
                     includes: None,
+                    #[cfg(feature = "std")]
+                    plugins: None,
+                    #[cfg(feature = "std")]
+                    resolved_plugins: (!self.plugins.is_empty()).then(|| self.plugins.clone()),
                 }
                 .serialize(serializer)
             }
@@ -2883,6 +2921,10 @@ impl Serialize for CuConfig {
                     runtime: self.runtime.clone(),
                     missions: Some(missions),
                     includes: None,
+                    #[cfg(feature = "std")]
+                    plugins: None,
+                    #[cfg(feature = "std")]
+                    resolved_plugins: (!self.plugins.is_empty()).then(|| self.plugins.clone()),
                 }
                 .serialize(serializer)
             }
@@ -2901,6 +2943,8 @@ impl Default for CuConfig {
             resources: Vec::new(),
             log_streaming: None,
             bridges: Vec::new(),
+            #[cfg(feature = "std")]
+            plugins: Vec::new(),
         }
     }
 }
@@ -2924,6 +2968,8 @@ impl CuConfig {
             resources: Vec::new(),
             log_streaming: None,
             bridges: Vec::new(),
+            #[cfg(feature = "std")]
+            plugins: Vec::new(),
         }
     }
 
@@ -3934,6 +3980,13 @@ fn process_includes(
 ) -> CuResult<CuConfigRepresentation> {
     // Note: Circular dependency detection removed
     processed_files.push(file_path.to_string());
+    // `resolved_plugins` is written by Copper into the effective configuration; accepting it from
+    // a source file would let a file claim a provenance it never had.
+    if base_representation.resolved_plugins.is_some() {
+        return Err(CuError::from(format!(
+            "{file_path}: `resolved_plugins` is written by Copper and cannot appear in a configuration file"
+        )));
+    }
 
     let mut result = base_representation;
 
@@ -4110,10 +4163,204 @@ fn process_includes(
                     result.missions = Some(missions);
                 }
             }
+
+            if let Some(included_plugins) = included_representation.resolved_plugins {
+                result
+                    .resolved_plugins
+                    .get_or_insert_with(Vec::new)
+                    .extend(included_plugins);
+            }
         }
     }
 
+    process_plugins(file_path, &mut result, active_features, processed_files)?;
+
     Ok(result)
+}
+
+/// Expands the `plugins` entries of one configuration file into its representation.
+///
+/// Built without the `plugins` feature, a configuration that names plugins is an error: the
+/// nodes would otherwise be missing from the graph without any message.
+#[cfg(all(feature = "std", not(feature = "plugins")))]
+fn process_plugins(
+    _file_path: &str,
+    result: &mut CuConfigRepresentation,
+    _active_features: &[&str],
+    _dependencies: &mut Vec<String>,
+) -> CuResult<()> {
+    match result.plugins.take() {
+        Some(entries) if !entries.is_empty() => Err(CuError::from(
+            "this configuration names plugins, but cu29-runtime was built without its `plugins` feature; \
+             enable the `plugins` feature of cu29 (or cu29-runtime)",
+        )),
+        _ => Ok(()),
+    }
+}
+
+#[cfg(all(feature = "std", not(feature = "plugins")))]
+fn check_plugin_results(_representation: &CuConfigRepresentation) -> CuResult<()> {
+    Ok(())
+}
+
+#[cfg(feature = "plugins")]
+fn plugin_error(error: cu29_plugin::PluginError) -> CuError {
+    CuError::from(error.to_string())
+}
+
+/// Node ids the configuration already declares.
+#[cfg(feature = "plugins")]
+fn declared_ids(representation: &CuConfigRepresentation) -> cu29_plugin::ExistingIds {
+    cu29_plugin::ExistingIds {
+        tasks: representation
+            .tasks
+            .iter()
+            .flatten()
+            .map(|n| n.id.clone())
+            .collect(),
+        bridges: representation
+            .bridges
+            .iter()
+            .flatten()
+            .map(|b| b.id.clone())
+            .collect(),
+        resources: representation
+            .resources
+            .iter()
+            .flatten()
+            .map(|r| r.id.clone())
+            .collect(),
+    }
+}
+
+/// Expands the `plugins` entries of one configuration file into its representation.
+///
+/// A plugin's nodes are appended to the application's; an id that is already declared is an
+/// error, so a plugin can never be silently dropped or shadowed. Every plugin file that was read
+/// is appended to `dependencies`.
+#[cfg(feature = "plugins")]
+fn process_plugins(
+    file_path: &str,
+    result: &mut CuConfigRepresentation,
+    active_features: &[&str],
+    dependencies: &mut Vec<String>,
+) -> CuResult<()> {
+    let Some(plugins) = result.plugins.take() else {
+        return Ok(());
+    };
+    let config_dir = std::path::Path::new(file_path)
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new(""));
+    let host = cu29_plugin::Host {
+        copper_version: env!("CARGO_PKG_VERSION"),
+    };
+    let active: Vec<&PluginConfig> = plugins
+        .iter()
+        .filter(|p| {
+            p.when
+                .as_ref()
+                .is_none_or(|predicate| predicate.evaluate(active_features))
+        })
+        .collect();
+    // Instance names are checked before anything is merged, so the message names the real cause.
+    let earlier = result.resolved_plugins.as_deref().unwrap_or_default();
+    let names: Vec<&str> = earlier
+        .iter()
+        .map(|r| r.instance.as_str())
+        .chain(active.iter().map(|p| p.instance.as_str()))
+        .collect();
+    cu29_plugin::check_instance_names(&names).map_err(plugin_error)?;
+
+    for plugin in active {
+        let entry = cu29_plugin::PluginUse {
+            path: plugin.path.clone(),
+            fragment: plugin.fragment.clone(),
+            instance: plugin.instance.clone(),
+            params: plugin.params.clone(),
+            pin: plugin.pin.clone(),
+            dev: plugin.dev,
+        };
+        let expanded = cu29_plugin::expand(&entry, config_dir, &host).map_err(plugin_error)?;
+        let previous = result.resolved_plugins.as_deref().unwrap_or_default();
+        cu29_plugin::check_collisions(&expanded.provenance, &declared_ids(result), previous)
+            .map_err(plugin_error)?;
+        let fragment = parse_config_string(&expanded.ron).map_err(|e| {
+            CuError::from(format!(
+                "plugin '{}' instance '{}': {e}",
+                expanded.provenance.id, expanded.provenance.instance
+            ))
+        })?;
+        merge_plugin_fragment(result, fragment);
+        dependencies.extend(
+            expanded
+                .files
+                .iter()
+                .map(|f| f.to_string_lossy().into_owned()),
+        );
+        result
+            .resolved_plugins
+            .get_or_insert_with(Vec::new)
+            .push(expanded.provenance);
+    }
+    Ok(())
+}
+
+/// Appends the sections a plugin fragment may contain.
+#[cfg(feature = "plugins")]
+fn merge_plugin_fragment(result: &mut CuConfigRepresentation, fragment: CuConfigRepresentation) {
+    if let Some(tasks) = fragment.tasks {
+        result.tasks.get_or_insert_with(Vec::new).extend(tasks);
+    }
+    if let Some(bridges) = fragment.bridges {
+        result.bridges.get_or_insert_with(Vec::new).extend(bridges);
+    }
+    if let Some(resources) = fragment.resources {
+        result
+            .resources
+            .get_or_insert_with(Vec::new)
+            .extend(resources);
+    }
+    if let Some(connections) = fragment.cnx {
+        let cnx = result.cnx.get_or_insert_with(Vec::new);
+        for connection in connections {
+            if !cnx.iter().any(|c| {
+                c.src == connection.src && c.dst == connection.dst && c.msg == connection.msg
+            }) {
+                cnx.push(connection);
+            }
+        }
+    }
+}
+
+/// Checks that hold across the whole merged configuration: no connection from outside a plugin
+/// into its private nodes, and no outside node binding its private resource bundles.
+#[cfg(feature = "plugins")]
+fn check_plugin_results(representation: &CuConfigRepresentation) -> CuResult<()> {
+    let Some(records) = representation.resolved_plugins.as_deref() else {
+        return Ok(());
+    };
+    let connections: Vec<(String, String, String)> = representation
+        .cnx
+        .iter()
+        .flatten()
+        .map(|c| (c.src.clone(), c.dst.clone(), c.msg.clone()))
+        .collect();
+    cu29_plugin::check_encapsulation(records, &connections).map_err(plugin_error)?;
+
+    let mut bindings: Vec<(String, String)> = Vec::new();
+    let mut bind = |node: &str, resources: &Option<HashMap<String, String>>| {
+        for target in resources.iter().flat_map(|r| r.values()) {
+            let bundle = target.split('.').next().unwrap_or(target);
+            bindings.push((node.to_owned(), bundle.to_owned()));
+        }
+    };
+    for node in representation.tasks.iter().flatten() {
+        bind(&node.id, &node.resources);
+    }
+    for bridge in representation.bridges.iter().flatten() {
+        bind(&bridge.id, &bridge.resources);
+    }
+    cu29_plugin::check_resource_access(records, &bindings).map_err(plugin_error)
 }
 
 #[cfg(feature = "std")]
@@ -4770,19 +5017,46 @@ fn resolve_configuration_representation(
     file_path: Option<&str>,
     active_features: &[&str],
 ) -> CuResult<CuConfigRepresentation> {
+    resolve_configuration_representation_tracked(config_content, file_path, active_features)
+        .map(|(representation, _)| representation)
+}
+
+/// Like `resolve_configuration_representation`, also returning every file that was read: the
+/// configuration, its includes and the files of its plugins.
+#[allow(unused_variables)]
+fn resolve_configuration_representation_tracked(
+    config_content: &str,
+    file_path: Option<&str>,
+    active_features: &[&str],
+) -> CuResult<(CuConfigRepresentation, Vec<String>)> {
     // Parse the configuration string
     let representation = parse_config_string(config_content)?;
 
     // Process includes and generate a merged configuration if a file path is provided
     // includes are only available with std.
     #[cfg(feature = "std")]
-    let representation = if let Some(path) = file_path {
-        process_includes(path, representation, &mut Vec::new(), active_features)?
+    let (representation, files) = if let Some(path) = file_path {
+        let mut files = Vec::new();
+        let representation = process_includes(path, representation, &mut files, active_features)?;
+        check_plugin_results(&representation)?;
+        (representation, files)
     } else {
-        representation
+        if representation
+            .plugins
+            .as_ref()
+            .is_some_and(|p| !p.is_empty())
+        {
+            return Err(CuError::from(
+                "`plugins` entries are resolved relative to a configuration file, but this configuration \
+                 was read from a string with no file path",
+            ));
+        }
+        (representation, Vec::new())
     };
+    #[cfg(not(feature = "std"))]
+    let files = Vec::new();
 
-    Ok(representation)
+    Ok((representation, files))
 }
 
 /// Read a Copper configuration and return the include-expanded RON used by proc-macro bundling.
@@ -4794,6 +5068,28 @@ fn resolve_configuration_representation(
 #[allow(dead_code)]
 pub fn read_configuration_with_resolved_ron(config_filename: &str) -> CuResult<(CuConfig, String)> {
     read_configuration_with_resolved_ron_and_features(config_filename, &[])
+}
+
+/// Like `read_configuration_with_resolved_ron_and_features`, also returning every file that was
+/// read (the configuration, its includes and the files of its plugins). The proc macro makes the
+/// compiler track them so the application is rebuilt when one changes.
+#[cfg(feature = "std")]
+#[doc(hidden)]
+pub fn read_configuration_with_resolved_ron_files_and_features(
+    config_filename: &str,
+    active_features: &[&str],
+) -> CuResult<(CuConfig, String, Vec<String>)> {
+    let config_content = read_configuration_content(config_filename)?;
+    let (representation, files) = resolve_configuration_representation_tracked(
+        &config_content,
+        Some(config_filename),
+        active_features,
+    )?;
+    let resolved_ron = CuConfig::get_options()
+        .to_string_pretty(&representation, ron::ser::PrettyConfig::default())
+        .map_err(|e| CuError::from(format!("Error serializing configuration: {e}")))?;
+    let config = config_representation_to_config(representation)?;
+    Ok((config, resolved_ron, files))
 }
 
 /// Read and expand a Copper configuration using the supplied compile-time Cargo features.

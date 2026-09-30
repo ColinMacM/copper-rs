@@ -1,0 +1,28 @@
+[package]
+name = "cu29-plugin"
+description = "Copper static plugins: manifests, parameters, content pins and configuration fragments."
+documentation = "https://docs.rs/cu29"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+keywords.workspace = true
+categories.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[features]
+default = ["expand"]
+# Manifest parsing, parameter validation, content pins and fragment expansion. Without it the crate
+# only provides the `Provenance` record that a configuration carries.
+expand = ["dep:blake3", "dep:ron", "dep:semver"]
+
+[dependencies]
+blake3 = { workspace = true, features = ["std"], optional = true }
+ron = { version = "0.12", optional = true }
+semver = { version = "1", optional = true }
+serde = { version = "1.0", features = ["derive"] }
+
+[dev-dependencies]
+tempfile = { workspace = true }

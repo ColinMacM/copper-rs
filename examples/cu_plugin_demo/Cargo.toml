@@ -1,0 +1,32 @@
+[package]
+name = "cu-plugin-demo"
+description = "Builds a Copper application from a static plugin and records the plugin in the unified log"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+keywords.workspace = true
+categories.workspace = true
+homepage.workspace = true
+repository.workspace = true
+publish = false
+
+[[bin]]
+name = "cu-plugin-demo"
+path = "src/main.rs"
+
+[dependencies]
+cu29 = { workspace = true, features = ["reflect", "plugins"] }
+cu-demo-smoothing = { path = "smoothing" }
+serde = { workspace = true }
+bincode = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[build-dependencies]
+cu29-build = { workspace = true }
+
+[package.metadata.cargo-shear]
+ignored = ["bincode", "serde"]

@@ -20,7 +20,7 @@ use cu29_runtime::config::DEFAULT_MISSION_ID;
 use cu29_runtime::config::{
     AnytimeConfig, BridgeChannelConfigRepresentation, ConfigGraphs, CuGraph, Flavor, HandleContent,
     Node, NodeId, PlannerKind, RT_POOL, ResourceBundleConfig, SchedulingPolicy, TaskKind,
-    read_configuration_with_features, read_configuration_with_resolved_ron_and_features,
+    read_configuration_with_features, read_configuration_with_resolved_ron_files_and_features,
 };
 use cu29_runtime::curuntime::{
     CuExecutionLoop, CuExecutionStep, CuExecutionUnit, CuStepPhase, CuTaskType,
@@ -196,6 +196,9 @@ impl CopperRuntimeArgs {
 struct ResolvedRuntimeConfig {
     local_config: CuConfig,
     bundled_local_config_content: String,
+    /// Every file the configuration was read from; the generated code tracks them so the
+    /// application is rebuilt when one changes.
+    dependency_files: Vec<String>,
     active_features: Vec<String>,
     subsystem_id: Option<String>,
     subsystem_code: u16,
@@ -1310,8 +1313,8 @@ fn resolve_runtime_config_with_root_and_features(
         })?;
         // Bundle the include-expanded source representation. Serializing the lowered
         // mission graphs would lose the source task order because missions use hash maps.
-        let (local_config, bundled_local_config_content) =
-            read_configuration_with_resolved_ron_and_features(
+        let (local_config, bundled_local_config_content, dependency_files) =
+            read_configuration_with_resolved_ron_files_and_features(
                 &subsystem.config_path,
                 active_features,
             )
@@ -1326,6 +1329,7 @@ fn resolve_runtime_config_with_root_and_features(
         Ok(ResolvedRuntimeConfig {
             local_config,
             bundled_local_config_content,
+            dependency_files,
             active_features: active_features
                 .iter()
                 .map(|feature| (*feature).to_string())
@@ -1334,11 +1338,15 @@ fn resolve_runtime_config_with_root_and_features(
             subsystem_code: subsystem.subsystem_code,
         })
     } else {
-        let (local_config, bundled_local_config_content) =
-            read_configuration_with_resolved_ron_and_features(filename.as_str(), active_features)?;
+        let (local_config, bundled_local_config_content, dependency_files) =
+            read_configuration_with_resolved_ron_files_and_features(
+                filename.as_str(),
+                active_features,
+            )?;
         Ok(ResolvedRuntimeConfig {
             local_config,
             bundled_local_config_content,
+            dependency_files,
             active_features: active_features
                 .iter()
                 .map(|feature| (*feature).to_string())

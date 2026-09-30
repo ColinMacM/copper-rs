@@ -1,0 +1,23 @@
+[package]
+name = "cu-plugin"
+description = "Create, inspect, check and pin Copper static plugins."
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+keywords.workspace = true
+categories.workspace = true
+homepage.workspace = true
+repository.workspace = true
+readme = "README.md"
+
+[dependencies]
+clap = { workspace = true }
+cu29-plugin = { workspace = true, features = ["expand"] }
+cu29-runtime = { workspace = true, features = ["std", "plugins"] }
+semver = "1"
+serde_json = { workspace = true, features = ["std"] }
+
+[dev-dependencies]
+tempfile = { workspace = true }

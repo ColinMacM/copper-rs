@@ -1,0 +1,21 @@
+(
+    format: 1,
+    id: "cu-demo-smoothing",
+    version: "0.1.0",
+    description: "Moving average followed by a limit",
+    copper: ">=1.3.0-dev",
+    rust: [(package: "cu-demo-smoothing", version: ">=1.3.0-dev")],
+    params: {
+        "window": (kind: Int, min: 1, max: 64, default: 4),
+        "gain": (kind: Float, default: 1.0),
+        "max_value": (kind: Float, default: 1000.0),
+        "label": (kind: Str),
+    },
+    fragments: {
+        "moving_average": (
+            path: "fragments/moving_average.ron",
+            public: ["average", "limit"],
+        ),
+    },
+    assets: [],
+)

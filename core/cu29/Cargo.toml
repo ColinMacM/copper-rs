@@ -114,6 +114,7 @@ std = [
   "cu29-unifiedlog/std",
   "cu29-value/std",
 ]
+plugins = ["std", "cu29-runtime/plugins", "cu29-derive/plugins"]
 rtsan = ["dep:rtsan-standalone", "cu29-derive/rtsan"]
 safety-ids = ["std", "dep:inventory", "dep:serde_json"]
 

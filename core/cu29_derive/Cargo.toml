@@ -51,6 +51,7 @@ logstream = []
 # normally don't enable it directly on `cu29-derive`.
 memory_monitoring = ["cu29-runtime/memory_monitoring"]
 signal-handler = []
+plugins = ["cu29-runtime/plugins"]
 flat-copperlist-encoding = []
 rtsan = []
 

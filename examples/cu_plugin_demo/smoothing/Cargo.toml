@@ -1,0 +1,18 @@
+[package]
+name = "cu-demo-smoothing"
+description = "Moving-average and limit tasks, shipped with a static plugin"
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+keywords.workspace = true
+categories.workspace = true
+homepage.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+cu29 = { workspace = true, features = ["reflect"] }
+serde = { workspace = true }
+bincode = { workspace = true }

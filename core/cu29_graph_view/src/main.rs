@@ -5042,6 +5042,7 @@ mod tests {
     fn linux_bundle_catalog_includes_known_slots_without_bindings() {
         let config = config::CuConfig {
             constants: Vec::new(),
+            plugins: Vec::new(),
             monitors: Vec::new(),
             logging: None,
             runtime: None,

@@ -54,6 +54,13 @@ pub fn copper_runtime(args: TokenStream, input: TokenStream) -> TokenStream {
     let subsystem_id = resolved_runtime_config.subsystem_id.clone();
     let config_features = resolved_runtime_config.active_features.clone();
     let copper_config_content = resolved_runtime_config.bundled_local_config_content.clone();
+    // `include_bytes!` makes rustc record each file as a dependency of this crate, so editing the
+    // configuration, an include or a plugin file triggers a rebuild (and a fresh pin check).
+    let tracked_files: Vec<proc_macro2::TokenStream> = resolved_runtime_config
+        .dependency_files
+        .iter()
+        .map(|path| quote! { const _: &[u8] = include_bytes!(#path); })
+        .collect();
     let copper_config = resolved_runtime_config.local_config;
     if copper_config.log_streaming.is_some() && !logstream_enabled {
         return return_error(
@@ -1499,9 +1506,12 @@ pub fn copper_runtime(args: TokenStream, input: TokenStream) -> TokenStream {
                     quote! { CuComponentState::Start },
                 );
                 quote! {
-                    {
+                    // Labeled so that a simulation override skips only this bridge's step, as it
+                    // does for tasks; returning would also skip every later component's start and
+                    // the keyframe buffer sizing.
+                    '__cu_bridge_start: {
                         #call_sim
-                        if !doit { return Ok(()); }
+                        if !doit { break '__cu_bridge_start; }
                         self.copper_runtime.record_execution_marker(
                             cu29::monitoring::ExecutionMarker {
                                 component_id: cu29::monitoring::ComponentId::new(#monitor_index),
@@ -1576,9 +1586,11 @@ pub fn copper_runtime(args: TokenStream, input: TokenStream) -> TokenStream {
                     quote! { CuComponentState::Stop },
                 );
                 quote! {
-                    {
+                    // Labeled so that a simulation override skips only this bridge's step, as it
+                    // does for tasks.
+                    '__cu_bridge_stop: {
                         #call_sim
-                        if !doit { return Ok(()); }
+                        if !doit { break '__cu_bridge_stop; }
                         self.copper_runtime.record_execution_marker(
                             cu29::monitoring::ExecutionMarker {
                                 component_id: cu29::monitoring::ComponentId::new(#monitor_index),
@@ -5004,6 +5016,8 @@ pub fn copper_runtime(args: TokenStream, input: TokenStream) -> TokenStream {
                 ) -> #monitor_type {
                     #monitor_instanciator_body
                 }
+
+                #(#tracked_files)*
 
                 // The application for this mission
                 #app_resources_struct
