@@ -6,19 +6,58 @@ arrives at cycle `j` starts at step `j - k`, one step plays per cycle, and an `E
 out each cycle. The arm follows the played target exactly. This makes many episodes cheap, so the
 effect of real-time chunking on chunk hand-overs can be measured with statistics; the Copper
 loop itself is covered by the end-to-end test.
+
+The delay of a chunk is an integer, a list cycled through, or a function of the chunk's index
+and a seeded random generator (`jittered`). A chunk older than `max_age` cycles when it arrives
+is refused, as the governor refuses it.
 """
+import random
+
 import numpy as np
 import torch
 
 from . import flow_policy, rtc, wire
 
 
-def run_episode(policy, *, use_rtc, delay, cycles=140, s_min=25, d_init=3, blend=0, seed=0, **plan):
-    """One episode. `delay` is the true delay in cycles of every chunk. `blend` is the governor's
-    crossfade length in steps (0 = off). `plan` holds `rtc.PlanConfig` fields (`beta`, `steps`,
-    `roll_obs`, `positional_noise`, `best_of`, `project`, ...). Returns the played targets
-    (cycles, M) in policy units, the hand-over jumps (max over joints, per switch) and the
-    `PlanInfo` of every guided chunk."""
+def jittered(low, high):
+    """A delay that varies between `low` and `high` cycles, drawn per chunk."""
+    return lambda index, rng: rng.randint(low, high)
+
+
+def _delay_of(delay, index, rng):
+    if callable(delay):
+        return int(delay(index, rng))
+    if isinstance(delay, (list, tuple)):
+        return int(delay[index % len(delay)])
+    return int(delay)
+
+
+def detour_offset(played):
+    """Joint 0's distance from the straight path of the fork demonstrations, per cycle: positive
+    on one side of the obstacle, negative on the other."""
+    t = torch.arange(len(played)).float()
+    straight = flow_policy.episode_path(torch.zeros(flow_policy.DIM), torch.zeros(1), t)
+    return played[:, 0] - straight[:, 0]
+
+
+def mode_flips(played, threshold=0.1):
+    """How often the played path changes side of the obstacle: sign changes of the detour offset
+    among the cycles where it is beyond `threshold` (policy units)."""
+    signs = [1 if x > threshold else -1 for x in detour_offset(played).tolist() if abs(x) > threshold]
+    return sum(1 for a, b in zip(signs, signs[1:]) if a != b)
+
+
+def run_episode(policy, *, use_rtc, delay, cycles=140, s_min=25, d_init=3, blend=0, seed=0, max_age=None,
+                stats=None, **plan):
+    """One episode. `delay` is the true delay in cycles of each chunk (see the module). `blend` is
+    the governor's crossfade length in steps (0 = off) and `max_age` the oldest chunk, in cycles,
+    that the governor accepts (None accepts any). `plan` holds `rtc.PlanConfig` fields (`beta`,
+    `steps`, `roll_obs`, `positional_noise`, `best_of`, `project`, ...). If `stats` is a dict it
+    receives `chunks` (requested), `refused` (too old when they arrived) and `held` (cycles after
+    the first chunk with no step to play). Returns the played targets (cycles, M) in policy units,
+    the hand-over jumps (max over joints, per switch) and the `PlanInfo` of every guided chunk."""
+    rng = random.Random(seed)
+    counts = {"chunks": 0, "refused": 0, "held": 0}
     dim = flow_policy.DIM
     cfg = rtc.PlanConfig(use_rtc=use_rtc, horizon=plan.pop("horizon", flow_policy.HORIZON), noise_seed=seed, **plan)
     torch.manual_seed(seed)
@@ -35,6 +74,9 @@ def run_episode(policy, *, use_rtc, delay, cycles=140, s_min=25, d_init=3, blend
         obs = position.clone()
         for item in [i for i in inflight if i[0] == t]:
             inflight.remove(item)
+            if max_age is not None and t - item[1] > max_age:
+                counts["refused"] += 1
+                continue
             if blend and active is not None and cursor < active[1].shape[0]:
                 old, blended = (active[1], cursor), 0
             active, cursor = (item[1], item[2]), t - item[1]
@@ -58,6 +100,8 @@ def run_episode(policy, *, use_rtc, delay, cycles=140, s_min=25, d_init=3, blend
                 if prev_chunk is not None and seq != prev_chunk and prev_target is not None:
                     jumps.append(float((target - prev_target).abs().max()))
                 prev_chunk, prev_target = seq, target
+            else:
+                counts["held"] += 1
         exec_state = wire.Exec(t, active[0] if active else 0, index, flags)
         position = target.clone()
         played.append(position)
@@ -67,7 +111,10 @@ def run_episode(policy, *, use_rtc, delay, cycles=140, s_min=25, d_init=3, blend
             chunk, info = rtc.plan_chunk(policy.velocity, obs, a_prev, d, s, t, cfg)
             infos.append(info)
             chunker.sent(t, chunk.detach(), t)
-            inflight.append((t + delay, t, chunk.detach()))
+            inflight.append((t + _delay_of(delay, counts["chunks"], rng), t, chunk.detach()))
+            counts["chunks"] += 1
+    if stats is not None:
+        stats.update(counts)
     return torch.stack(played), jumps, infos
 
 
@@ -86,13 +133,17 @@ def compare(policy, delay, episodes, **kw):
 
 def ablate(policy, delay, episodes, variants):
     """Hand-over jumps for named variants, `{name: run_episode keyword arguments}`, over the same
-    seeded episodes. Returns `{name: {"mean", "max", "n", "unhealthy", "guided", "accel", "final_err"}}`."""
+    seeded episodes. Returns `{name: {"mean", "max", "n", "unhealthy", "guided", "accel", "final_err", "flips",
+    "refused"}}`."""
     out = {}
     for name, kw in variants.items():
-        jumps_all, unhealthy, guided, accels, finals = [], 0, 0, [], []
+        jumps_all, unhealthy, guided, accels, finals, flips, refused = [], 0, 0, [], [], [], 0
         for seed in range(episodes):
-            played, jumps, infos = run_episode(policy, delay=delay, seed=seed, **kw)
+            counts = {}
+            played, jumps, infos = run_episode(policy, delay=delay, seed=seed, stats=counts, **kw)
             jumps_all.extend(jumps)
+            flips.append(mode_flips(played))
+            refused += counts["refused"]
             accels.append(float((played[2:] - 2 * played[1:-1] + played[:-2]).abs().max()))
             finals.append(float((played[-1] - flow_policy.TARGET).abs().max()))
             unhealthy += sum(1 for i in infos if i.guided and not i.healthy)
@@ -105,5 +156,7 @@ def ablate(policy, delay, episodes, variants):
             "guided": guided,
             "accel": float(np.mean(accels)),  # largest second difference of the played targets, per episode
             "final_err": float(np.mean(finals)),  # distance from the target at the end of the episode
+            "flips": float(np.mean(flips)),  # changes of side of the obstacle per episode
+            "refused": refused,  # chunks that arrived older than max_age
         }
     return out
