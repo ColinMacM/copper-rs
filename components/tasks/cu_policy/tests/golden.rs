@@ -3,7 +3,8 @@
 //! and every rejected input must fail with its error.
 
 use cu_policy::wire::{
-    self, CHUNK_LEN, Exec, IMAGE_HEADER_BYTES, ImageHeader, OBS_JOINTS, SliceWriter, WireError,
+    self, CHUNK_LEN, Exec, IMAGE_HEADER_BYTES, ImageHeader, OBS_JOINTS, PolicyOptions, SliceWriter,
+    WireError,
 };
 use serde_json::Value;
 
@@ -89,12 +90,21 @@ fn every_vector_encodes_to_its_bytes_and_decodes_from_them() {
             "request" => {
                 let state = floats(&f["state"]);
                 let previous = floats(&f["previous"]);
+                let options = PolicyOptions {
+                    horizon: u32_of(f, "horizon"),
+                    mode: u32_of(f, "mode"),
+                    denoise_steps: u32_of(f, "denoise_steps"),
+                    best_of: u32_of(f, "best_of"),
+                    flags: u32_of(f, "flags"),
+                    beta: f["beta"].as_f64().unwrap() as f32,
+                };
                 let n = wire::encode_request(
                     &mut buf,
                     u64_of(f, "obs_seq"),
                     u32_of(f, "delay"),
                     u32_of(f, "executed"),
                     u32_of(f, "reason"),
+                    &options,
                     &state,
                     &previous,
                 )
@@ -111,6 +121,7 @@ fn every_vector_encodes_to_its_bytes_and_decodes_from_them() {
                         u32_of(f, "reason")
                     )
                 );
+                assert_eq!(r.options, options, "{name}");
                 assert_eq!(bits(r.state()), bits(&state), "{name}");
                 assert_eq!(bits(r.previous()), bits(&previous), "{name}");
             }

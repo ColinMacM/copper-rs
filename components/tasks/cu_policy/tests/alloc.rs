@@ -72,6 +72,7 @@ fn params() -> GovernorParams {
             replan_threshold: 0.05,
             pending_timeout: 25,
             blend_steps: 3,
+            ..SchedParams::default()
         },
     }
 }

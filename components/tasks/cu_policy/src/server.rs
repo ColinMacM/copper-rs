@@ -218,8 +218,13 @@ mod tests {
     use super::*;
 
     fn request_bytes(obs_seq: u64, previous: &[f32]) -> Vec<u8> {
+        request_with(obs_seq, &wire::PolicyOptions::default(), previous)
+    }
+
+    fn request_with(obs_seq: u64, options: &wire::PolicyOptions, previous: &[f32]) -> Vec<u8> {
         let mut buf = vec![0u8; 2048];
-        let n = wire::encode_request(&mut buf, obs_seq, 3, 7, 2, &[1.0; 6], previous).unwrap();
+        let n =
+            wire::encode_request(&mut buf, obs_seq, 3, 7, 2, options, &[1.0; 6], previous).unwrap();
         buf.truncate(n);
         buf
     }
@@ -249,6 +254,26 @@ mod tests {
         let mut reply = [0u8; CHUNK_BYTES];
         answer(&mut policy, &request_bytes(1, &[0.5; 12]), &mut reply).unwrap();
         assert_eq!(seen, Some((3, 7, 2, vec![0.5; 12])));
+    }
+
+    #[test]
+    fn the_policy_sees_how_it_is_to_plan() {
+        let options = wire::PolicyOptions {
+            horizon: 40,
+            mode: wire::MODE_RTC,
+            denoise_steps: 8,
+            best_of: 4,
+            flags: wire::FLAG_PROJECT | wire::FLAG_POSITIONAL_NOISE,
+            beta: 2.5,
+        };
+        let mut seen = None;
+        let mut policy = |r: &Request, _: &mut [f32; CHUNK_LEN]| {
+            seen = Some(r.options);
+            JOINTS
+        };
+        let mut reply = [0u8; CHUNK_BYTES];
+        answer(&mut policy, &request_with(1, &options, &[]), &mut reply).unwrap();
+        assert_eq!(seen, Some(options));
     }
 
     #[test]

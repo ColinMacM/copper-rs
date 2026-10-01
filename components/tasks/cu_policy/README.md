@@ -176,41 +176,55 @@ policies are `--policy scripted` (a sine for testing), `--policy act` (a LeRobot
 `copper_policy.rtc` implements Real-Time Chunking from the paper: pseudoinverse-guided flow
 matching (Eq. 2-4) with the soft mask of Eq. 5 and the clipped guidance weight. The first `d`
 actions of the new chunk are frozen to the executing chunk's unplayed actions and the rest is
-inpainted to agree with them. `--rtc on` (default) does this; `--rtc off` samples each chunk
-freely.
+inpainted to agree with them.
 
-Options of `--policy flow`, measured in `copper_policy.rtc_sim.ablate` (40 seeded episodes, 200
-hand-overs per row, a delay of 8 cycles; jump and acceleration in ticks):
+How a flow policy plans is part of the graph's configuration. The governor sends the options
+with every `InferenceRequest` (`wire::PolicyOptions`), the server plans as the request says, and
+the log records both the configuration and the requests, so a run is identified by its log
+alone. The sidecar's own arguments are `--seed` (the noise) and `--health-tol` (the prefix
+residual, in policy units, above which a chunk counts as unhealthy; the runner reports
+`unhealthy` and `max_residual`).
 
-| Option | What it does | Mean jump / max jump / acceleration |
-| --- | --- | --- |
-| `--rtc off` | sample freely, replace the old chunk | 78 / 349 / 150 |
-| `--rtc on` | the paper | 45 / 189 / 89 |
-| `--positional-noise` | the noise of step `t` is a fixed function of `(seed, t)`, so chunks that overlap start their overlapping steps from the same noise | with RTC 36 / 108 / 75 |
-| `--roll-obs` | plan from the state expected after the frozen steps, then put those steps in front | 37 / 83 / 73 |
-| `--best-of K` | draw K guided samples and keep the one with the smallest weighted prefix residual | K = 4: 37 / 110 / 75 |
-| `--project` | set the frozen steps to the previous chunk's values exactly | 45 / 189 / 89; the guarantee is the exact prefix |
-| governor `blend_steps` | the played target moves from the old chunk's step to the new one's | 4 steps: 17 / 46 / 66 |
+| Governor key | Plugin parameter (`rtc_loop`) | What it does | Mean jump / max jump / acceleration |
+| --- | --- | --- | --- |
+| `rtc_mode`: `"naive"` | `mode: "naive"` | sample freely, replace the old chunk | 78 / 349 / 150 |
+| `rtc_mode`: `"rtc"` | `mode: "rtc"` (default) | the paper | 45 / 189 / 89 |
+| `rtc_positional_noise` | always on in the fragment | the noise of step `t` is a fixed function of `(seed, t)`, so chunks that overlap start their overlapping steps from the same noise | with RTC 36 / 108 / 75 |
+| `rtc_roll_obs` | `roll_obs` | plan from the state expected after the frozen steps, then put those steps in front | 37 / 83 / 73 |
+| `rtc_best_of` | `best_of` | draw K guided samples and keep the one with the smallest weighted prefix residual | K = 4: 37 / 110 / 75 |
+| `rtc_project` | `project` | set the frozen steps to the previous chunk's values exactly | 45 / 189 / 89; the guarantee is the exact prefix |
+| `blend_steps` | `blend_steps` (default 3) | the played target moves from the old chunk's step to the new one's | 4 steps: 17 / 46 / 66 |
+| `rtc_beta`, `rtc_denoise_steps` | `beta` (5.0), `denoise_steps` (5) | the guidance weight clip and the denoising steps | |
 
-`--health-tol` sets the prefix residual (in policy units) above which a chunk counts as
-unhealthy; the runner reports `unhealthy` and `max_residual`.
+The rows are measured in `copper_policy.rtc_sim.ablate` (40 seeded episodes, 200 hand-overs per
+row, a delay of 8 cycles; jump and acceleration in ticks) on a synthetic policy and a simulated arm.
 
 ## Plugin
 
-`plugin.ron` and `fragments/loop.ron` make the governor and the link a static plugin,
+`plugin.ron` and the fragments in `fragments/` make the governor and the link a static plugin,
 `cu-policy-loop` (see `doc/static-plugins.md`). The plugin directory is the crate directory: the
 Python modules and the wire vectors are its assets, and its version is the crate's version (a
 test checks that the crate, the plugin and `pyproject.toml` agree).
+
+| Fragment | Contents |
+| --- | --- |
+| `loop` | The governor and the link. Policies that answer every observation use it. |
+| `rtc_loop` | The same graph with the chunk scheduler, the cross-fade and the options of real-time chunking. Selecting the fragment selects the schedule, and `mode` selects `rtc` or `naive` guidance for A/B runs. |
+
+The effective configuration that Copper writes into the log records the fragment name and every
+resolved parameter of each instance, and every `InferenceRequest` records the options the policy
+was given.
 
 ```ron
 plugins: [
     (
         path: "../../components/tasks/cu_policy",
-        fragment: "loop",
+        fragment: "rtc_loop",
         instance: "vla",
         params: {
             "min_0": 200.0, "max_0": 3900.0,   // ... through joint 5
             "max_step": 30.0, "max_lead": 300.0, "cycle_ms": 33.333,
+            "mode": "rtc",
         },
         pin: "blake3:<just plugin-pin components/tasks/cu_policy>",
     ),
@@ -222,21 +236,30 @@ connects the measured positions and the stamp into `<instance>_gov`, takes the g
 and connects its observation and camera into `<instance>_link/obs` and `<instance>_link/img`.
 The fragment connects the chunk from the link into the governor and the governor's `exec` and
 `infer` outputs into the link. The routes are `<instance>/obs`, `/img`, `/exec`, `/infer` and
-`/action`, so `--key-prefix <instance>` matches.
+`/action`, so `--key-prefix <instance>` matches, and two instances in one graph share no id and
+no route.
 
-The plugin passes every parameter to the governor. The governor's own defaults (scheduler off,
-`blend_steps` 0) apply to a graph that configures the governor directly.
+The plugin passes its parameters to the governor. The governor's own defaults (scheduler off,
+`blend_steps` 0, `rtc_mode` naive) apply to a graph that configures the governor directly.
 
-| Parameter | Default | Meaning |
-| --- | --- | --- |
-| `min_0` ... `min_5`, `max_0` ... `max_5` | required | Joint limits. |
-| `max_step`, `max_lead`, `cycle_ms` | required | See the governor keys. |
-| `max_age_ms` | 600 | See the governor keys. |
-| `hold_deadline_ms` | 2500 | See the governor keys. |
-| `horizon` | 50 | `sched_horizon`. |
-| `s_min` | 25 | `sched_s_min`; 0 turns the scheduler off. |
-| `d_init` | 3 | `sched_d_init`. |
-| `blend_steps` | 3 | `blend_steps`. |
+| Parameter | Default | Fragments | Meaning |
+| --- | --- | --- | --- |
+| `min_0` ... `min_5`, `max_0` ... `max_5` | required | both | Joint limits. |
+| `max_step`, `max_lead`, `cycle_ms` | required | both | See the governor keys. |
+| `max_age_ms` | 600 | both | See the governor keys. |
+| `hold_deadline_ms` | 2500 | both | See the governor keys. |
+| `horizon` | 50 | `rtc_loop` | `sched_horizon`: the policy's prediction horizon. |
+| `s_min` | 25 | `rtc_loop` | `sched_s_min`; 0 turns the scheduler off. |
+| `d_init` | 3 | `rtc_loop` | `sched_d_init`. |
+| `blend_steps` | 3 | `rtc_loop` | `blend_steps`. |
+| `mode` | `rtc` | `rtc_loop` | `rtc_mode`: `rtc` or `naive`. |
+| `beta` | 5.0 | `rtc_loop` | `rtc_beta`. |
+| `denoise_steps` | 5 | `rtc_loop` | `rtc_denoise_steps`. |
+| `best_of` | 1 | `rtc_loop` | `rtc_best_of`. |
+| `project`, `roll_obs` | false | `rtc_loop` | `rtc_project`, `rtc_roll_obs`. |
+
+The resolved parameters of a `loop` instance include the `rtc_loop` parameters at their
+defaults; only `rtc_loop` applies them.
 
 ## Tests
 

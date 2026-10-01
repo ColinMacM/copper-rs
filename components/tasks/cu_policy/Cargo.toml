@@ -44,6 +44,10 @@ cu29-unifiedlog = { workspace = true }
 serde_json = { workspace = true, features = ["std"] }
 tempfile = { workspace = true }
 
+[[example]]
+name = "rust_policy"
+required-features = ["server"]
+
 [build-dependencies]
 cu29-build = { workspace = true }
 

@@ -71,18 +71,18 @@ class ExecMetrics:
                 "max_accel": round(self.max_accel, 1), "played": self.played, "max_delay": self.max_delay}
 
 
-def serve_flow(policy, connect_port, seconds, *, cfg, delay_s=0.0, kill_after=None, log=None, seed=0,
-               prefix=DEFAULT_KEY_PREFIX):
+def serve_flow(policy, connect_port, seconds, *, health_tol=0.05, delay_s=0.0, kill_after=None, log=None,
+               seed=0, prefix=DEFAULT_KEY_PREFIX):
     """Answer the governor's inference requests with a flow-matching policy.
 
-    The server keeps no schedule. The scheduler in the governor decides when to ask and sends
-    everything real-time chunking needs: the observation, the delay estimate `d`, the number of
-    steps `s` of the executing chunk already played, and that chunk's unplayed remainder. With
-    `cfg.use_rtc` the new chunk is inpainted against the remainder (paper Algorithm 1,
-    GUIDEDINFERENCE); without it the chunk is sampled freely and replaces the old one, the
-    naive asynchronous baseline. `rtc.plan_chunk` holds the rest of the options (rolling the
-    observation forward, noise indexed by absolute step, best-of-K, exact prefix projection,
-    the health check). A newer request replaces an unanswered older one.
+    The scheduler in the governor decides when to ask and sends everything the plan needs: the
+    observation, the delay estimate `d`, the number of steps `s` of the executing chunk already
+    played, that chunk's unplayed remainder, and how to plan (`wire.Options`: real-time chunking
+    or free sampling, the denoising steps, the guidance weight, best-of-K, exact prefix
+    projection, rolling the observation forward, noise indexed by absolute step). The graph's
+    configuration is the only place these are set, and the log records it. `seed` seeds the noise
+    and `health_tol` is the prefix residual, in policy units, above which a chunk counts as
+    unhealthy. A newer request replaces an unanswered older one.
     """
     import numpy as np
     import torch
@@ -99,7 +99,8 @@ def serve_flow(policy, connect_port, seconds, *, cfg, delay_s=0.0, kill_after=No
     wake = threading.Event()
     sent_ticks = {}  # only for the metrics below; no decision reads it
     latest = {"request": None}
-    stats = {"chunks": 0, "guided": 0, "events": 0, "unhealthy": 0, "bad_requests": 0, "infer_ms": [], "max_residual": 0.0}
+    stats = {"chunks": 0, "guided": 0, "events": 0, "unhealthy": 0, "bad_requests": 0, "infer_ms": [],
+             "max_residual": 0.0, "horizon_mismatch": 0}
 
     def on_request(sample):
         try:
@@ -148,6 +149,12 @@ def serve_flow(policy, connect_port, seconds, *, cfg, delay_s=0.0, kill_after=No
             a_prev = torch.tensor(
                 flow_policy.from_ticks(np.asarray(request.previous, dtype=np.float32).reshape(-1, flow_policy.DIM))
             )
+        if request.horizon != flow_policy.HORIZON:
+            if not stats["horizon_mismatch"]:
+                print(f"warning: the governor assumes a horizon of {request.horizon} steps, the policy has "
+                      f"{flow_policy.HORIZON}", file=sys.stderr, flush=True)
+            stats["horizon_mismatch"] += 1
+        cfg = rtc.PlanConfig.from_request(request, noise_seed=seed, health_tol=health_tol)
         chunk, info = rtc.plan_chunk(policy.velocity, obs, a_prev, request.delay, request.executed, request.obs_seq, cfg)
         stats["guided"] += info.guided
         stats["unhealthy"] += info.guided and not info.healthy
@@ -257,14 +264,7 @@ def main(argv=None):
     p.add_argument("--seconds", type=float, default=10.0)
     p.add_argument("--policy", choices=["scripted", "act", "flow"], default="scripted")
     p.add_argument("--checkpoint", help="flow: trained checkpoint from copper_policy.flow_policy")
-    p.add_argument("--rtc", choices=["on", "off"], default="on", help="flow: real-time chunking, or the naive asynchronous baseline")
-    p.add_argument("--beta", type=float, default=5.0, help="flow: guidance weight clip")
-    p.add_argument("--roll-obs", action="store_true", help="flow: plan from the state after the frozen prefix")
-    p.add_argument("--positional-noise", action="store_true", help="flow: noise indexed by absolute step")
-    p.add_argument("--best-of", type=int, default=1, help="flow: guided samples per chunk, best prefix residual wins")
-    p.add_argument("--project", action="store_true", help="flow: force the frozen steps to the previous chunk exactly")
-    p.add_argument("--health-tol", type=float, default=0.05, help="flow: prefix residual (policy units) above which a chunk is unhealthy")
-    p.add_argument("--denoise-steps", type=int, default=5)
+    p.add_argument("--health-tol", type=float, default=0.05, help="flow: prefix residual (policy units) above which a chunk counts as unhealthy")
     p.add_argument("--seed", type=int, default=0, help="flow: noise seed")
     p.add_argument("--calibration", help="act: LeRobot calibration JSON (joint names shoulder_pan .. gripper)")
     p.add_argument("--target", type=float, default=None, help="scripted: fixed target in raw ticks")
@@ -277,17 +277,9 @@ def main(argv=None):
     if a.policy == "flow":
         from . import flow_policy
 
-        from . import rtc
-
-        cfg = rtc.PlanConfig(
-            use_rtc=a.rtc == "on", horizon=flow_policy.HORIZON, steps=a.denoise_steps, beta=a.beta,
-            roll_obs=a.roll_obs, positional_noise=a.positional_noise, noise_seed=a.seed,
-            best_of=a.best_of, project=a.project, health_tol=a.health_tol,
-        )
         stats = serve_flow(
-            flow_policy.load(a.checkpoint), a.connect_port, a.seconds, cfg=cfg,
-            delay_s=a.delay_s, kill_after=a.kill_after, log=sys.stdout, seed=a.seed,
-            prefix=a.key_prefix,
+            flow_policy.load(a.checkpoint), a.connect_port, a.seconds, health_tol=a.health_tol,
+            delay_s=a.delay_s, kill_after=a.kill_after, log=sys.stdout, seed=a.seed, prefix=a.key_prefix,
         )
         stats["infer_ms"] = len(stats["infer_ms"])
         print(json.dumps(stats), flush=True)

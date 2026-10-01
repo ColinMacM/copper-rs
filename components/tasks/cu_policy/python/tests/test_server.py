@@ -37,3 +37,13 @@ def test_a_request_that_does_not_decode_does_not_reach_the_policy():
     with pytest.raises(wire.WireError) as e:
         server.answer(lambda r: asked.append(r) or [0.0] * 6, request_bytes()[:-1])
     assert e.value.kind == "truncated" and not asked
+
+
+def test_the_policy_sees_how_it_is_to_plan():
+    options = wire.Options(horizon=40, mode=wire.MODE_RTC, denoise_steps=8, best_of=4,
+                           flags=wire.FLAG_PROJECT | wire.FLAG_POSITIONAL_NOISE, beta=2.5)
+    seen = []
+    data = wire.encode_request(1, 3, 7, 2, [1.0] * 6, [], options)
+    server.answer(lambda r: seen.append(r) or [0.0] * 6, data)
+    r = seen[0]
+    assert (r.horizon, r.mode, r.denoise_steps, r.best_of, r.flags, r.beta) == tuple(options)

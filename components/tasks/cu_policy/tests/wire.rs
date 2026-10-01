@@ -80,6 +80,12 @@ fn an_inference_request_encodes_to_the_documented_bytes_and_roundtrips() {
         delay: 5,
         executed: 25,
         reason: InferenceRequest::REASON_SCHEDULED,
+        horizon: 50,
+        mode: cu_policy::wire::MODE_RTC,
+        denoise_steps: 8,
+        best_of: 4,
+        flags: cu_policy::wire::FLAG_PROJECT | cu_policy::wire::FLAG_POSITIONAL_NOISE,
+        beta: 2.5,
         state,
         previous,
     };
@@ -87,9 +93,11 @@ fn an_inference_request_encodes_to_the_documented_bytes_and_roundtrips() {
     let n = encode_into_slice(r.clone(), &mut buf, cfg()).unwrap();
     let mut expected = Vec::new();
     expected.extend_from_slice(&((1u64 << 40) + 9).to_le_bytes());
-    for v in [5u32, 25, 2, 6] {
+    for v in [5u32, 25, 2, 50, 1, 8, 4, 5] {
         expected.extend_from_slice(&v.to_le_bytes());
     }
+    expected.extend_from_slice(&2.5f32.to_le_bytes());
+    expected.extend_from_slice(&6u32.to_le_bytes());
     for v in [1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0] {
         expected.extend_from_slice(&v.to_le_bytes());
     }
@@ -102,6 +110,17 @@ fn an_inference_request_encodes_to_the_documented_bytes_and_roundtrips() {
     assert_eq!(
         (back.obs_seq, back.delay, back.executed, back.reason),
         (r.obs_seq, 5, 25, 2)
+    );
+    assert_eq!(
+        (
+            back.horizon,
+            back.mode,
+            back.denoise_steps,
+            back.best_of,
+            back.flags,
+            back.beta
+        ),
+        (50, 1, 8, 4, 5, 2.5)
     );
     assert_eq!(back.previous.as_slice(), r.previous.as_slice());
     // The largest request, a full chunk behind a full state, must fit the link's slot.

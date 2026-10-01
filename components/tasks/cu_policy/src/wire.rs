@@ -5,7 +5,7 @@
 //! | [`Obs`] | `seq: u64`, `tov_ns: u64`, `len: u32`, `len` x `f32` |
 //! | [`Chunk`] | `obs_seq: u64`, `len: u32`, `len` x `f32` |
 //! | [`Exec`] | `stamp_seq: u64`, `chunk_seq: u64`, `next_index: u32`, `flags: u32`, `accept_skip: u32`, `reject: u32`, `tracking_err: f32` |
-//! | [`Request`] | `obs_seq: u64`, `delay: u32`, `executed: u32`, `reason: u32`, `state_len: u32`, `state_len` x `f32`, `previous_len: u32`, `previous_len` x `f32` |
+//! | [`Request`] | `obs_seq: u64`, `delay: u32`, `executed: u32`, `reason: u32`, the [`PolicyOptions`] (`horizon: u32`, `mode: u32`, `denoise_steps: u32`, `best_of: u32`, `flags: u32`, `beta: f32`), `state_len: u32`, `state_len` x `f32`, `previous_len: u32`, `previous_len` x `f32` |
 //! | [`ImageHeader`] | `seq: u64`, `tov_ns: u64`, `width: u32`, `height: u32`, `stride: u32`, `pixel_format: [u8; 4]`, `len: u32`, followed by `len` bytes of pixels |
 //!
 //! Each message has one definition, a pair of functions generic over [`Sink`] and [`Source`].
@@ -317,6 +317,49 @@ pub fn read_exec<S: Source>(s: &mut S) -> Result<Exec, S::Error> {
     })
 }
 
+/// No guidance: each chunk is sampled freely and replaces the executing one.
+pub const MODE_NAIVE: u32 = 0;
+/// Real-time chunking: the new chunk is inpainted against the executing chunk's unplayed steps.
+pub const MODE_RTC: u32 = 1;
+
+/// [`PolicyOptions::flags`]: set the frozen steps to the executing chunk's values exactly.
+pub const FLAG_PROJECT: u32 = 1;
+/// [`PolicyOptions::flags`]: plan from the state expected after the frozen steps.
+pub const FLAG_ROLL_OBS: u32 = 2;
+/// [`PolicyOptions::flags`]: draw the noise of each step from a function of its control cycle.
+pub const FLAG_POSITIONAL_NOISE: u32 = 4;
+
+/// How the policy is to plan, sent with every request so that the graph's configuration is the
+/// only place these are set.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PolicyOptions {
+    /// Prediction horizon of the policy, in steps.
+    pub horizon: u32,
+    /// [`MODE_NAIVE`] or [`MODE_RTC`].
+    pub mode: u32,
+    /// Denoising steps of a flow policy.
+    pub denoise_steps: u32,
+    /// Guided samples drawn per chunk; the one with the smallest prefix residual is kept.
+    pub best_of: u32,
+    /// `FLAG_*` bits.
+    pub flags: u32,
+    /// Clip of the guidance weight.
+    pub beta: f32,
+}
+
+impl Default for PolicyOptions {
+    fn default() -> Self {
+        Self {
+            horizon: MAX_STEPS as u32,
+            mode: MODE_NAIVE,
+            denoise_steps: 5,
+            best_of: 1,
+            flags: 0,
+            beta: 5.0,
+        }
+    }
+}
+
 /// A request to the policy: the observation, the delay estimate, the steps of the active chunk
 /// already played, and that chunk's unplayed remainder.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -325,6 +368,7 @@ pub struct Request {
     pub delay: u32,
     pub executed: u32,
     pub reason: u32,
+    pub options: PolicyOptions,
     pub state_len: usize,
     pub state: [f32; OBS_JOINTS],
     pub previous_len: usize,
@@ -345,12 +389,14 @@ impl Request {
 
 /// Writes a request. `state` has at most [`OBS_JOINTS`] values and `previous` at most
 /// [`CHUNK_LEN`].
+#[allow(clippy::too_many_arguments)]
 pub fn write_request<S: Sink>(
     s: &mut S,
     obs_seq: u64,
     delay: u32,
     executed: u32,
     reason: u32,
+    options: &PolicyOptions,
     state: &[f32],
     previous: &[f32],
 ) -> Result<(), S::Error> {
@@ -358,17 +404,24 @@ pub fn write_request<S: Sink>(
     s.put_u32(delay)?;
     s.put_u32(executed)?;
     s.put_u32(reason)?;
+    s.put_u32(options.horizon)?;
+    s.put_u32(options.mode)?;
+    s.put_u32(options.denoise_steps)?;
+    s.put_u32(options.best_of)?;
+    s.put_u32(options.flags)?;
+    s.put_f32(options.beta)?;
     write_f32s(s, state, OBS_JOINTS)?;
     write_f32s(s, previous, CHUNK_LEN)
 }
 
 /// The scalar fields of a request read by [`read_request`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RequestHeader {
     pub obs_seq: u64,
     pub delay: u32,
     pub executed: u32,
     pub reason: u32,
+    pub options: PolicyOptions,
     /// Values written into the state buffer.
     pub state_len: usize,
     /// Values written into the previous buffer.
@@ -386,6 +439,14 @@ pub fn read_request<S: Source>(
     let delay = s.get_u32()?;
     let executed = s.get_u32()?;
     let reason = s.get_u32()?;
+    let options = PolicyOptions {
+        horizon: s.get_u32()?,
+        mode: s.get_u32()?,
+        denoise_steps: s.get_u32()?,
+        best_of: s.get_u32()?,
+        flags: s.get_u32()?,
+        beta: s.get_f32()?,
+    };
     let state_len = read_f32s(s, state)?;
     let previous_len = read_f32s(s, previous)?;
     Ok(RequestHeader {
@@ -393,6 +454,7 @@ pub fn read_request<S: Source>(
         delay,
         executed,
         reason,
+        options,
         state_len,
         previous_len,
     })
@@ -503,17 +565,21 @@ pub fn decode_exec(bytes: &[u8]) -> Result<(Exec, usize), WireError> {
 }
 
 /// Encodes a request into `out` and returns the bytes written.
+#[allow(clippy::too_many_arguments)]
 pub fn encode_request(
     out: &mut [u8],
     obs_seq: u64,
     delay: u32,
     executed: u32,
     reason: u32,
+    options: &PolicyOptions,
     state: &[f32],
     previous: &[f32],
 ) -> Result<usize, WireError> {
     let mut w = SliceWriter::new(out);
-    write_request(&mut w, obs_seq, delay, executed, reason, state, previous)?;
+    write_request(
+        &mut w, obs_seq, delay, executed, reason, options, state, previous,
+    )?;
     Ok(w.len())
 }
 
@@ -528,6 +594,7 @@ pub fn decode_request(bytes: &[u8]) -> Result<(Request, usize), WireError> {
         delay: h.delay,
         executed: h.executed,
         reason: h.reason,
+        options: h.options,
         state_len: h.state_len,
         state,
         previous_len: h.previous_len,

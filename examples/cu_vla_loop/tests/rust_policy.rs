@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use cu_policy::server::{ServerConfig, ServerStats, serve};
 use cu_policy::wire::{CHUNK_LEN, JOINTS, Request};
-use cu_vla_loop::{TRACE, listen_config, run_configured};
+use cu_vla_loop::{Setting, TRACE, listen_config, run_configured};
 
 static SERIAL: Mutex<()> = Mutex::new(());
 
@@ -64,9 +64,9 @@ fn a_policy_written_in_rust_drives_the_arm_inside_the_limits() {
             // The scheduler asks for a new chunk after 8 of its 20 steps, and a chunk keeps
             // playing for that long.
             &[
-                ("sched_s_min", 8.0),
-                ("sched_horizon", STEPS as f64),
-                ("hold_deadline_ms", 2500.0),
+                ("sched_s_min", Setting::Num(8.0)),
+                ("sched_horizon", Setting::Num(STEPS as f64)),
+                ("hold_deadline_ms", Setting::Num(2500.0)),
             ],
             |_| {},
             |_| {},

@@ -26,7 +26,7 @@
     plugins: [
         (
             path: "../../components/tasks/cu_policy",
-            fragment: "loop",
+            fragment: "rtc_loop",
             instance: "vla",
             params: {
                 "min_0": 200.0, "max_0": 3900.0,
@@ -39,7 +39,7 @@
                 "max_lead": 300.0,
                 "cycle_ms": 33.333,
             },
-            pin: "blake3:7c841f84cfbdb950df37d65f1b26695ea39c5d10e99bb34bf02ff012da0bfbf5",
+            pin: "blake3:ff9862bbfbabd52cf1035b486ba5560c668139fb7455329e590178fa6b445039",
         ),
     ],
     logging: (slab_size_mib: 64, section_size_mib: 16, keyframe_interval: 30),

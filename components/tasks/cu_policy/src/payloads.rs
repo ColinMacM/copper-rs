@@ -2,7 +2,10 @@ use bincode::{Decode, Encode};
 use cu29::prelude::*;
 use serde::{Deserialize, Serialize};
 
-pub use crate::wire::{CHUNK_LEN, JOINTS, MAX_STEPS, OBS_JOINTS};
+pub use crate::wire::{
+    CHUNK_LEN, FLAG_POSITIONAL_NOISE, FLAG_PROJECT, FLAG_ROLL_OBS, JOINTS, MAX_STEPS, MODE_NAIVE,
+    MODE_RTC, OBS_JOINTS,
+};
 
 use crate::wire::{self, Sink, Source};
 use cu29::bincode::de::Decoder;
@@ -144,6 +147,18 @@ pub struct InferenceRequest {
     pub executed: u32,
     /// `REASON_*` bits.
     pub reason: u32,
+    /// Prediction horizon of the policy, in steps.
+    pub horizon: u32,
+    /// `MODE_NAIVE` or `MODE_RTC`.
+    pub mode: u32,
+    /// Denoising steps of a flow policy.
+    pub denoise_steps: u32,
+    /// Guided samples drawn per chunk.
+    pub best_of: u32,
+    /// `FLAG_*` bits.
+    pub flags: u32,
+    /// Clip of the guidance weight.
+    pub beta: f32,
     pub state: CuArray<f32, OBS_JOINTS>,
     pub previous: CuArray<f32, CHUNK_LEN>,
 }
@@ -165,6 +180,14 @@ impl Encode for InferenceRequest {
             self.delay,
             self.executed,
             self.reason,
+            &wire::PolicyOptions {
+                horizon: self.horizon,
+                mode: self.mode,
+                denoise_steps: self.denoise_steps,
+                best_of: self.best_of,
+                flags: self.flags,
+                beta: self.beta,
+            },
             self.state.as_slice(),
             self.previous.as_slice(),
         )
@@ -185,6 +208,12 @@ impl Decode<()> for InferenceRequest {
             delay: h.delay,
             executed: h.executed,
             reason: h.reason,
+            horizon: h.options.horizon,
+            mode: h.options.mode,
+            denoise_steps: h.options.denoise_steps,
+            best_of: h.options.best_of,
+            flags: h.options.flags,
+            beta: h.options.beta,
             state,
             previous,
         })

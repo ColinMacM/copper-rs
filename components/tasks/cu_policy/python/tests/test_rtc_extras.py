@@ -143,3 +143,19 @@ def test_projection_is_a_guarantee_not_a_speed_up(ablation):
     # The steps it corrects are the ones the governor skips when the delay estimate covers the
     # delay, so what is played does not change.
     assert proj["mean"] == pytest.approx(plain["mean"], rel=1e-6)
+
+
+def test_the_plan_is_what_the_request_asks_for():
+    from copper_policy import wire
+
+    def plan(options):
+        data = wire.encode_request(40, 3, 7, 2, [0.0] * 6, [0.0] * 6, options)
+        return rtc.PlanConfig.from_request(wire.decode_request(data), noise_seed=9, health_tol=0.1)
+
+    rtc_cfg = plan(wire.Options(mode=wire.MODE_RTC, denoise_steps=8, best_of=4, beta=2.5,
+                                flags=wire.FLAG_PROJECT | wire.FLAG_ROLL_OBS | wire.FLAG_POSITIONAL_NOISE))
+    assert (rtc_cfg.use_rtc, rtc_cfg.steps, rtc_cfg.best_of, rtc_cfg.beta) == (True, 8, 4, 2.5)
+    assert (rtc_cfg.project, rtc_cfg.roll_obs, rtc_cfg.positional_noise) == (True, True, True)
+    assert (rtc_cfg.noise_seed, rtc_cfg.health_tol, rtc_cfg.horizon) == (9, 0.1, 50)
+    naive = plan(wire.Options(mode=wire.MODE_NAIVE, flags=wire.FLAG_POSITIONAL_NOISE))
+    assert (naive.use_rtc, naive.project, naive.roll_obs, naive.positional_noise) == (False, False, False, True)

@@ -414,6 +414,34 @@ pub fn run_hooked(
     run_configured(cycles, hz, log_path, zenoh_json, &[], before, after)
 }
 
+/// A governor setting replaced at run time.
+#[derive(Debug, Clone, Copy)]
+pub enum Setting {
+    Num(f64),
+    Text(&'static str),
+}
+
+/// Replaces settings of the governor in `config`.
+pub fn apply_settings(config: &mut CuConfig, settings: &[(&str, Setting)]) -> CuResult<()> {
+    if settings.is_empty() {
+        return Ok(());
+    }
+    let graph = config.get_graph_mut(None)?;
+    let id = graph
+        .get_node_id_by_name("vla_gov")
+        .ok_or_else(|| CuError::from("vla_gov task missing from the configuration"))?;
+    let node = graph
+        .get_node_mut(id)
+        .ok_or_else(|| CuError::from("vla_gov node missing from the graph"))?;
+    for (key, value) in settings {
+        match value {
+            Setting::Num(v) => node.set_param(key, *v),
+            Setting::Text(t) => node.set_param(key, (*t).to_owned()),
+        }
+    }
+    Ok(())
+}
+
 /// Like [`run_hooked`], with governor settings replaced by `governor` (key, value) pairs.
 /// Real-time chunking needs a longer `hold_deadline_ms` than the default: the governor stops
 /// playing a chunk that was not replaced within that time, and RTC lets a chunk play for its
@@ -423,7 +451,7 @@ pub fn run_configured(
     hz: f64,
     log_path: &std::path::Path,
     zenoh_json: &str,
-    governor: &[(&str, f64)],
+    governor: &[(&str, Setting)],
     mut before: impl FnMut(usize),
     mut after: impl FnMut(usize),
 ) -> CuResult<()> {
@@ -439,18 +467,7 @@ pub fn run_configured(
     link.config
         .get_or_insert_with(ComponentConfig::default)
         .set("zenoh_config_json", zenoh_json.to_string());
-    if !governor.is_empty() {
-        let graph = config.get_graph_mut(None)?;
-        let id = graph
-            .get_node_id_by_name("vla_gov")
-            .ok_or_else(|| CuError::from("vla_gov task missing from the configuration"))?;
-        let node = graph
-            .get_node_mut(id)
-            .ok_or_else(|| CuError::from("vla_gov node missing from the graph"))?;
-        for (key, value) in governor {
-            node.set_param(key, *value);
-        }
-    }
+    apply_settings(&mut config, governor)?;
     let app = VlaLoopApp::builder()
         .with_log_path(log_path, Some(64 * 1024 * 1024))?
         .with_config(config)

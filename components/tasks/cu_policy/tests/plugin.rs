@@ -123,24 +123,44 @@ struct Expected {
     connections: &'static [(&'static str, &'static str, &'static str)],
 }
 
-const FRAGMENTS: &[Expected] = &[Expected {
-    fragment: "loop",
-    nodes: &["{i}_gov", "{i}_link"],
-    public: &["{i}_gov", "{i}_link"],
-    routes: &[
-        "{i}/obs",
-        "{i}/img",
-        "{i}/exec",
-        "{i}/infer",
-        "{i}/action",
-        "{i}/link_status",
-    ],
-    connections: &[
-        ("{i}_gov", "{i}_link/exec", "cu_policy::ExecState"),
-        ("{i}_gov", "{i}_link/infer", "cu_policy::InferenceRequest"),
-        ("{i}_link/action", "{i}_gov", "cu_policy::ActionChunk"),
-    ],
-}];
+const FRAGMENTS: &[Expected] = &[
+    Expected {
+        fragment: "loop",
+        nodes: &["{i}_gov", "{i}_link"],
+        public: &["{i}_gov", "{i}_link"],
+        routes: &[
+            "{i}/obs",
+            "{i}/img",
+            "{i}/exec",
+            "{i}/infer",
+            "{i}/action",
+            "{i}/link_status",
+        ],
+        connections: &[
+            ("{i}_gov", "{i}_link/exec", "cu_policy::ExecState"),
+            ("{i}_gov", "{i}_link/infer", "cu_policy::InferenceRequest"),
+            ("{i}_link/action", "{i}_gov", "cu_policy::ActionChunk"),
+        ],
+    },
+    Expected {
+        fragment: "rtc_loop",
+        nodes: &["{i}_gov", "{i}_link"],
+        public: &["{i}_gov", "{i}_link"],
+        routes: &[
+            "{i}/obs",
+            "{i}/img",
+            "{i}/exec",
+            "{i}/infer",
+            "{i}/action",
+            "{i}/link_status",
+        ],
+        connections: &[
+            ("{i}_gov", "{i}_link/exec", "cu_policy::ExecState"),
+            ("{i}_gov", "{i}_link/infer", "cu_policy::InferenceRequest"),
+            ("{i}_link/action", "{i}_gov", "cu_policy::ActionChunk"),
+        ],
+    },
+];
 
 fn named(items: &[&str], i: &str) -> Vec<String> {
     items.iter().map(|s| s.replace("{i}", i)).collect()
@@ -252,7 +272,7 @@ fn two_instances_in_one_graph_share_no_id_and_no_route() {
 #[test]
 fn the_scheduler_parameters_reach_the_governor_as_integers() {
     let got = instance(
-        "loop",
+        "rtc_loop",
         "vla",
         &[
             ("s_min", ParamValue::Int(12)),
@@ -273,4 +293,95 @@ fn the_scheduler_parameters_reach_the_governor_as_integers() {
             got.ron
         );
     }
+}
+
+#[test]
+fn the_plain_loop_has_no_scheduler_and_the_rtc_loop_selects_its_mode() {
+    let plain = instance("loop", "vla", &[]);
+    for key in ["sched_s_min", "rtc_mode", "blend_steps"] {
+        assert!(
+            !plain.ron.contains(key),
+            "{key} in the plain loop:\n{}",
+            plain.ron
+        );
+    }
+    let rtc = instance("rtc_loop", "vla", &[]);
+    for line in [
+        "\"rtc_mode\": \"rtc\",",
+        "\"rtc_beta\": 5.0,",
+        "\"rtc_denoise_steps\": 5,",
+        "\"rtc_best_of\": 1,",
+        "\"rtc_project\": false,",
+        "\"rtc_roll_obs\": false,",
+        "\"rtc_positional_noise\": true,",
+    ] {
+        assert!(
+            rtc.ron.contains(line),
+            "{line} is missing from\n{}",
+            rtc.ron
+        );
+    }
+    let naive = instance(
+        "rtc_loop",
+        "vla",
+        &[
+            ("mode", ParamValue::Str("naive".into())),
+            ("beta", ParamValue::Float(2.0)),
+            ("best_of", ParamValue::Int(4)),
+            ("project", ParamValue::Bool(true)),
+            ("roll_obs", ParamValue::Bool(true)),
+        ],
+    );
+    for line in [
+        "\"rtc_mode\": \"naive\",",
+        "\"rtc_beta\": 2.0,",
+        "\"rtc_best_of\": 4,",
+        "\"rtc_project\": true,",
+        "\"rtc_roll_obs\": true,",
+    ] {
+        assert!(
+            naive.ron.contains(line),
+            "{line} is missing from\n{}",
+            naive.ron
+        );
+    }
+}
+
+#[test]
+fn the_effective_configuration_records_the_fragment_and_the_mode() {
+    let rtc = instance("rtc_loop", "vla", &[]);
+    assert_eq!(rtc.provenance.fragment, "rtc_loop");
+    assert_eq!(
+        rtc.provenance.params.get("mode").map(String::as_str),
+        Some("rtc")
+    );
+    let naive = instance(
+        "rtc_loop",
+        "vla",
+        &[("mode", ParamValue::Str("naive".into()))],
+    );
+    assert_eq!(
+        naive.provenance.params.get("mode").map(String::as_str),
+        Some("naive")
+    );
+    assert_ne!(rtc.provenance.params, naive.provenance.params);
+    assert_eq!(instance("loop", "vla", &[]).provenance.fragment, "loop");
+}
+
+#[test]
+fn a_mode_outside_the_choices_is_refused() {
+    let use_ = PluginUse {
+        path: crate_dir().to_string_lossy().into_owned(),
+        fragment: "rtc_loop".into(),
+        instance: "vla".into(),
+        params: {
+            let mut p = required_params();
+            p.insert("mode".into(), ParamValue::Str("guided".into()));
+            p
+        },
+        pin: None,
+        dev: true,
+    };
+    let e = expand(&use_, &crate_dir(), &HOST).unwrap_err();
+    assert!(e.message().contains("mode"), "{}", e.message());
 }

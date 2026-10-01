@@ -20,7 +20,10 @@ def encode(kind, f):
     if kind == "exec":
         return wire.encode_exec(**f)
     if kind == "request":
-        return wire.encode_request(f["obs_seq"], f["delay"], f["executed"], f["reason"], f["state"], f["previous"])
+        options = wire.Options(f["horizon"], f["mode"], f["denoise_steps"], f["best_of"], f["flags"], f["beta"])
+        return wire.encode_request(
+            f["obs_seq"], f["delay"], f["executed"], f["reason"], f["state"], f["previous"], options
+        )
     if kind == "image_header":
         return wire.encode_image_header(
             f["seq"], f["tov_ns"], f["width"], f["height"], f["stride"], f["pixel_format"].encode(), f["len"]
@@ -41,7 +44,8 @@ def decode(kind, data):
     if kind == "request":
         r = wire.decode_request(data)
         return {"obs_seq": r.obs_seq, "delay": r.delay, "executed": r.executed, "reason": r.reason,
-                "state": r.state, "previous": r.previous}
+                "horizon": r.horizon, "mode": r.mode, "denoise_steps": r.denoise_steps, "best_of": r.best_of,
+                "flags": r.flags, "beta": r.beta, "state": r.state, "previous": r.previous}
     if kind == "image_header":
         seq, tov_ns, w, h, stride, fmt, n = wire.decode_image_header(data)
         return {"seq": seq, "tov_ns": tov_ns, "width": w, "height": h, "stride": stride,

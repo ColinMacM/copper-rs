@@ -176,29 +176,50 @@ def encode_exec(stamp_seq, chunk_seq, next_index, flags, accept_skip=0, reject=0
     return _EXEC.pack(stamp_seq, chunk_seq, next_index, flags, accept_skip, reject, tracking_err)
 
 
-_REQ = struct.Struct("<QIIII")
-Request = collections.namedtuple("Request", "obs_seq delay executed reason state previous")
+MODE_NAIVE, MODE_RTC = 0, 1
+FLAG_PROJECT, FLAG_ROLL_OBS, FLAG_POSITIONAL_NOISE = 1, 2, 4
+
+_REQ = struct.Struct("<QIIIIIIIIfI")
+Request = collections.namedtuple(
+    "Request",
+    "obs_seq delay executed reason horizon mode denoise_steps best_of flags beta state previous",
+)
+
+
+class Options(
+    collections.namedtuple(
+        "Options",
+        "horizon mode denoise_steps best_of flags beta",
+        defaults=(MAX_STEPS, MODE_NAIVE, 5, 1, 0, 5.0),
+    )
+):
+    """How the policy is to plan, as the governor sends it with every request: the prediction
+    horizon, `MODE_NAIVE` or `MODE_RTC`, the denoising steps of a flow policy, the guided samples
+    drawn per chunk, `FLAG_*` bits and the clip of the guidance weight."""
+
+    __slots__ = ()
 
 
 def decode_request(data):
     """An `InferenceRequest` from the governor's scheduler: the observation, the delay estimate
-    `d`, the steps `s` of the active chunk already played, and the unplayed remainder of it
-    (flat, 6 values per step, empty when nothing is executing)."""
+    `d`, the steps `s` of the active chunk already played, how the policy is to plan, and the
+    unplayed remainder of the active chunk (flat, 6 values per step, empty when nothing is
+    executing)."""
     if len(data) < _REQ.size:
         raise _truncated("a request")
-    obs_seq, delay, executed, reason, n = _REQ.unpack_from(data)
+    obs_seq, delay, executed, reason, horizon, mode, steps, best_of, flags, beta, n = _REQ.unpack_from(data)
     state, pos = _floats(data, _REQ.size, n, OBS_JOINTS, "a request's state")
     if pos + _U32.size > len(data):
         raise _truncated("a request")
     (m,) = _U32.unpack_from(data, pos)
     previous, end = _floats(data, pos + _U32.size, m, MAX_CHUNK_VALUES, "a request's previous chunk")
     _finish(data, end, "a request")
-    return Request(obs_seq, delay, executed, reason, state, previous)
+    return Request(obs_seq, delay, executed, reason, horizon, mode, steps, best_of, flags, beta, state, previous)
 
 
-def encode_request(obs_seq, delay, executed, reason, state, previous):
+def encode_request(obs_seq, delay, executed, reason, state, previous, options=Options()):
     return (
-        _REQ.pack(obs_seq, delay, executed, reason, len(state))
+        _REQ.pack(obs_seq, delay, executed, reason, *options, len(state))
         + _pack_floats(state, OBS_JOINTS, "state")
         + _U32.pack(len(previous))
         + _pack_floats(previous, MAX_CHUNK_VALUES, "previous")

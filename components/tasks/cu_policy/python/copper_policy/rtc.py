@@ -203,6 +203,27 @@ class PlanConfig:
     health_tol: float = 0.05  # prefix residual above which the sample is reported unhealthy
 
 
+    @classmethod
+    def from_request(cls, request, noise_seed=0, health_tol=0.05):
+        """The plan the governor asked for: its options travel in every request, so the
+        configuration recorded with the graph is the one that runs. `noise_seed` and
+        `health_tol` belong to the process that serves the policy."""
+        from . import wire
+
+        return cls(
+            use_rtc=request.mode == wire.MODE_RTC,
+            horizon=request.horizon,
+            steps=request.denoise_steps,
+            beta=request.beta,
+            roll_obs=bool(request.flags & wire.FLAG_ROLL_OBS),
+            positional_noise=bool(request.flags & wire.FLAG_POSITIONAL_NOISE),
+            noise_seed=noise_seed,
+            best_of=request.best_of,
+            project=bool(request.flags & wire.FLAG_PROJECT),
+            health_tol=health_tol,
+        )
+
+
 @dataclasses.dataclass
 class PlanInfo:
     guided: bool = False

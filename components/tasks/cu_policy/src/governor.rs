@@ -1,5 +1,6 @@
 use crate::payloads::{
-    ActionChunk, CHUNK_LEN, ExecState, InferenceRequest, JOINTS, MAX_STEPS, ObsStamp,
+    ActionChunk, CHUNK_LEN, ExecState, FLAG_POSITIONAL_NOISE, FLAG_PROJECT, FLAG_ROLL_OBS,
+    InferenceRequest, JOINTS, MAX_STEPS, MODE_NAIVE, MODE_RTC, ObsStamp,
 };
 use cu29::bincode::de::Decoder;
 use cu29::bincode::enc::Encoder;
@@ -34,6 +35,16 @@ pub struct SchedParams {
     pub replan_threshold: f32,
     /// Cycles after which a request that was never answered is dropped.
     pub pending_timeout: u32,
+    /// How the policy plans, sent with every request: `MODE_NAIVE` or `MODE_RTC`.
+    pub mode: u32,
+    /// Denoising steps of a flow policy.
+    pub denoise_steps: u32,
+    /// Guided samples drawn per chunk.
+    pub best_of: u32,
+    /// `FLAG_*` bits.
+    pub flags: u32,
+    /// Clip of the guidance weight.
+    pub beta: f32,
     /// Cross-chunk handover: after a new chunk is accepted, the played target moves from the
     /// old chunk's step to the new chunk's over this many steps (weight `(n + 1) / (blend + 1)`
     /// for the n-th), so a late or inconsistent chunk cannot make the target jump. 0 disables.
@@ -49,6 +60,11 @@ impl Default for SchedParams {
             horizon: MAX_STEPS as u32,
             replan_threshold: 0.0,
             pending_timeout: 25,
+            mode: MODE_NAIVE,
+            denoise_steps: 5,
+            best_of: 1,
+            flags: 0,
+            beta: 5.0,
             blend_steps: 0,
         }
     }
@@ -474,6 +490,12 @@ impl GovernorCore {
             delay: d,
             executed: if have_chunk { played_index } else { 0 },
             reason,
+            horizon: sp.horizon,
+            mode: sp.mode,
+            denoise_steps: sp.denoise_steps,
+            best_of: sp.best_of,
+            flags: sp.flags,
+            beta: sp.beta,
             ..InferenceRequest::default()
         };
         request.state.fill_from_iter(meas.iter().copied());
@@ -665,8 +687,11 @@ fn param(c: &ComponentConfig, key: &str) -> CuResult<f64> {
 }
 
 impl SchedParams {
-    /// Optional keys `sched_s_min` (0 or absent disables), `sched_margin`, `sched_d_init`,
-    /// `sched_horizon`, `replan_threshold`, `sched_pending_timeout`, `blend_steps`.
+    /// Optional keys `sched_s_min` (0 or absent turns the scheduler off), `sched_margin`,
+    /// `sched_d_init`, `sched_horizon`, `replan_threshold`, `sched_pending_timeout`,
+    /// `blend_steps`, and the options sent to the policy with every request: `rtc_mode`
+    /// (`"rtc"` or `"naive"`), `rtc_beta`, `rtc_denoise_steps`, `rtc_best_of`, `rtc_project`,
+    /// `rtc_roll_obs` and `rtc_positional_noise`.
     pub fn from_config(c: &ComponentConfig) -> CuResult<Self> {
         let d = Self::default();
         let int = |key: &str, default: u32| -> CuResult<u32> {
@@ -678,7 +703,31 @@ impl SchedParams {
                 ))),
             }
         };
+        let mode = match c.get::<String>("rtc_mode")?.as_deref() {
+            None | Some("naive") => MODE_NAIVE,
+            Some("rtc") => MODE_RTC,
+            Some(other) => {
+                return Err(CuError::from(format!(
+                    "governor: rtc_mode is \"rtc\" or \"naive\", got {other:?}"
+                )));
+            }
+        };
+        let flag = |key: &str, bit: u32| -> CuResult<u32> {
+            Ok(if c.get::<bool>(key)?.unwrap_or(false) {
+                bit
+            } else {
+                0
+            })
+        };
+        let flags = flag("rtc_project", FLAG_PROJECT)?
+            | flag("rtc_roll_obs", FLAG_ROLL_OBS)?
+            | flag("rtc_positional_noise", FLAG_POSITIONAL_NOISE)?;
         let sched = Self {
+            mode,
+            denoise_steps: int("rtc_denoise_steps", d.denoise_steps)?,
+            best_of: int("rtc_best_of", d.best_of)?,
+            flags,
+            beta: c.get::<f64>("rtc_beta")?.unwrap_or(f64::from(d.beta)) as f32,
             s_min: int("sched_s_min", d.s_min)?,
             margin: int("sched_margin", d.margin)?,
             d_init: int("sched_d_init", d.d_init)?,
@@ -687,6 +736,16 @@ impl SchedParams {
             pending_timeout: int("sched_pending_timeout", d.pending_timeout)?,
             blend_steps: int("blend_steps", d.blend_steps)?,
         };
+        if !(1..=64).contains(&sched.denoise_steps) || !(1..=16).contains(&sched.best_of) {
+            return Err(CuError::from(
+                "governor: rtc_denoise_steps is 1 to 64 and rtc_best_of is 1 to 16",
+            ));
+        }
+        if !sched.beta.is_finite() || sched.beta < 0.0 {
+            return Err(CuError::from(
+                "governor: rtc_beta must be a non-negative number",
+            ));
+        }
         if !sched.replan_threshold.is_finite() || sched.replan_threshold < 0.0 {
             return Err(CuError::from(
                 "governor: replan_threshold must be a non-negative number",
@@ -1094,6 +1153,7 @@ mod tests {
             replan_threshold: threshold,
             pending_timeout: 25,
             blend_steps: 0,
+            ..SchedParams::default()
         };
         GovernorCore::new(p)
     }
@@ -1356,6 +1416,75 @@ mod tests {
                 b.step(t * MS, Some(t), None, Some(&Z)),
                 "cycle {t}"
             );
+        }
+    }
+
+    #[test]
+    fn the_request_carries_the_options_the_governor_is_configured_with() {
+        let mut g = sched_core(10, 0.0);
+        g.params.sched.mode = MODE_RTC;
+        g.params.sched.denoise_steps = 8;
+        g.params.sched.best_of = 3;
+        g.params.sched.flags = FLAG_PROJECT | FLAG_POSITIONAL_NOISE;
+        g.params.sched.beta = 2.5;
+        g.step(0, Some(0), None, Some(&Z));
+        let r = g.request().expect("the first cycle asks");
+        assert_eq!(
+            (
+                r.horizon,
+                r.mode,
+                r.denoise_steps,
+                r.best_of,
+                r.flags,
+                r.beta
+            ),
+            (
+                50,
+                MODE_RTC,
+                8,
+                3,
+                FLAG_PROJECT | FLAG_POSITIONAL_NOISE,
+                2.5
+            )
+        );
+    }
+
+    fn config(json: &str) -> ComponentConfig {
+        serde_json::from_str(json).expect("a configuration of scalars")
+    }
+
+    #[test]
+    fn the_options_are_read_from_the_configuration() {
+        let p = SchedParams::from_config(&config(r#"{"sched_s_min": 25}"#)).unwrap();
+        assert_eq!(
+            (p.mode, p.denoise_steps, p.best_of, p.flags, p.beta),
+            (MODE_NAIVE, 5, 1, 0, 5.0),
+            "the defaults"
+        );
+        let p = SchedParams::from_config(&config(
+            r#"{"sched_s_min": 25, "rtc_mode": "rtc", "rtc_beta": 2.0, "rtc_denoise_steps": 10,
+                "rtc_best_of": 4, "rtc_project": true, "rtc_roll_obs": true,
+                "rtc_positional_noise": false}"#,
+        ))
+        .unwrap();
+        assert_eq!(
+            (p.mode, p.denoise_steps, p.best_of, p.flags, p.beta),
+            (MODE_RTC, 10, 4, FLAG_PROJECT | FLAG_ROLL_OBS, 2.0)
+        );
+    }
+
+    #[test]
+    fn an_option_outside_its_documented_values_is_a_configuration_error() {
+        for bad in [
+            r#"{"rtc_mode": "guided"}"#,
+            r#"{"rtc_beta": -1.0}"#,
+            r#"{"rtc_denoise_steps": 0}"#,
+            r#"{"rtc_best_of": 17}"#,
+        ] {
+            let e = SchedParams::from_config(&config(bad))
+                .unwrap_err()
+                .to_string();
+            assert!(e.contains("rtc_"), "{bad}: {e}");
         }
     }
 

@@ -6,7 +6,7 @@
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-use cu_vla_loop::{bridges, listen_config, run_configured, tasks};
+use cu_vla_loop::{Setting, apply_settings, bridges, listen_config, run_configured, tasks};
 use cu29::prelude::*;
 use cu29::simulation::CuBridgeLifecycleState;
 use cu29_export::copperlists_reader;
@@ -17,20 +17,21 @@ struct Replay {}
 
 /// Governor settings for the scheduler. Recording and replay must agree on them: the replay
 /// re-executes the governor, and the scheduler's decisions are part of what must match.
-const SCHEDULER: &[(&str, f64)] = &[
-    ("sched_s_min", 6.0),
-    ("sched_margin", 2.0),
-    ("sched_d_init", 2.0),
-    ("sched_horizon", 50.0),
-    ("replan_threshold", 60.0),
-    ("hold_deadline_ms", 2500.0),
+const SCHEDULER: &[(&str, Setting)] = &[
+    ("sched_s_min", Setting::Num(6.0)),
+    ("sched_margin", Setting::Num(2.0)),
+    ("sched_d_init", Setting::Num(2.0)),
+    ("sched_horizon", Setting::Num(50.0)),
+    ("replan_threshold", Setting::Num(60.0)),
+    ("hold_deadline_ms", Setting::Num(2500.0)),
     // The crossfade between chunks is state too: the replay must reproduce what it played.
-    ("blend_steps", 3.0),
+    ("blend_steps", Setting::Num(3.0)),
 ];
 
-/// An inference request: observation, delay estimate, steps played, reason, and the bits of the
-/// unplayed remainder it carried.
-type Request = (u64, u32, u32, u32, Vec<u32>);
+/// An inference request: observation, delay estimate, steps played, reason, the options sent to
+/// the policy (horizon, mode, denoising steps, best-of, flags, the bits of beta) and the bits of
+/// the unplayed remainder it carried.
+type Request = (u64, u32, u32, u32, [u32; 6], Vec<u32>);
 
 /// Governor output of one CopperList: goal bits, status and the scheduler's request, if any.
 type Out = (Option<Vec<u32>>, String, Option<Request>);
@@ -53,6 +54,14 @@ fn read_outputs(base: &Path) -> Vec<Out> {
                     r.delay,
                     r.executed,
                     r.reason,
+                    [
+                        r.horizon,
+                        r.mode,
+                        r.denoise_steps,
+                        r.best_of,
+                        r.flags,
+                        r.beta.to_bits(),
+                    ],
                     r.previous.as_slice().iter().map(|f| f.to_bits()).collect(),
                 )
             });
@@ -153,11 +162,7 @@ fn a_recorded_policy_run_replays_identically_without_a_zenoh_session() {
     };
     let (clock, mock) = RobotClock::mock();
     let mut config = CuConfig::deserialize_ron(&Replay::original_config()).unwrap();
-    let graph = config.get_graph_mut(None).unwrap();
-    let gov = graph.get_node_id_by_name("vla_gov").unwrap();
-    for (key, value) in SCHEDULER {
-        graph.get_node_mut(gov).unwrap().set_param(key, *value);
-    }
+    apply_settings(&mut config, SCHEDULER).unwrap();
     let link = config
         .bridges
         .iter_mut()
@@ -238,8 +243,17 @@ fn a_recorded_policy_run_replays_identically_without_a_zenoh_session() {
         asked.len()
     );
     assert!(
-        asked.iter().any(|r| !r.4.is_empty()),
+        asked.iter().any(|r| !r.5.is_empty()),
         "no request carried an unplayed remainder"
+    );
+    // The options of the plugin's rtc_loop fragment travel in every request and replay with it.
+    assert!(
+        asked.iter().all(|r| r.4[1] == 1
+            && r.4[4] & 4 != 0
+            && r.4[0] == 50
+            && f32::from_bits(r.4[5]) == 5.0),
+        "a request without the RTC options: {:?}",
+        asked.iter().map(|r| r.4).collect::<Vec<_>>()
     );
     let reasons: std::collections::BTreeSet<u32> = asked.iter().map(|r| r.3).collect();
     println!("{} requests, reasons {reasons:?}", asked.len());

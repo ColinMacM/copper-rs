@@ -8,10 +8,13 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Mutex, OnceLock};
 
-use cu_vla_loop::{TRACE, listen_config, run_configured};
+use cu_vla_loop::{Setting, TRACE, listen_config, run_configured};
 
 static SERIAL: Mutex<()> = Mutex::new(());
 const HZ: f64 = 30.0;
+
+/// The graph's configuration for the baseline: same schedule, no guidance.
+const NAIVE: &[(&str, Setting)] = &[("rtc_mode", Setting::Text("naive"))];
 
 fn python_ready() -> bool {
     Command::new("python3")
@@ -103,13 +106,13 @@ fn run_policy(use_rtc: bool, delay_s: f64, cycles: usize, seed: u64) -> Outcome 
     let dir = tempfile::tempdir().unwrap();
     let seconds = cycles as f64 / HZ + 3.0;
     let mut child = None;
-    // The example's plugin entry is the RTC configuration: s_min 25, horizon 50, blend 3.
     run_configured(
         cycles,
         HZ,
         &dir.path().join("rtc.copper"),
         &listen_config(port),
-        &[],
+        // The example's plugin entry is the RTC configuration; the naive run changes its mode.
+        if use_rtc { &[] } else { NAIVE },
         |i| {
             if i == 0 {
                 child = Some(
@@ -118,11 +121,8 @@ fn run_policy(use_rtc: bool, delay_s: f64, cycles: usize, seed: u64) -> Outcome 
                         .arg(port.to_string())
                         .args(["--seconds", &seconds.to_string(), "--checkpoint"])
                         .arg(ckpt)
-                        .args(["--rtc", if use_rtc { "on" } else { "off" }])
                         .args(["--delay-s", &delay_s.to_string()])
                         .args(["--seed", &seed.to_string()])
-                        // noise indexed by absolute step, and the frozen prefix made exact
-                        .args(["--positional-noise", "--project"])
                         .current_dir(python_dir())
                         .stdout(Stdio::piped())
                         .stderr(Stdio::piped())
