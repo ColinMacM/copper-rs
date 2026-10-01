@@ -1,7 +1,7 @@
 //! The byte layout the Python runner relies on, checked from the Rust side.
 //! ObsPacket: seq u64 | tov_ns u64 | len u32 | len x f32. ActionChunk: obs_seq u64 | len u32 | len x f32, little-endian, fixed-width integers.
 
-use cu_action_governor::{ActionChunk, CHUNK_LEN, OBS_JOINTS, ObsPacket};
+use cu_action_governor::{ActionChunk, CHUNK_LEN, ExecState, OBS_JOINTS, ObsPacket};
 use cu29::bincode::{config, decode_from_slice, encode_into_slice};
 use cu29::prelude::CuArray;
 
@@ -41,6 +41,26 @@ fn an_observation_encodes_to_the_documented_bytes() {
         expected.extend_from_slice(&v.to_le_bytes());
     }
     assert_eq!(&buf[..n], expected.as_slice());
+}
+
+#[test]
+fn an_exec_state_encodes_to_the_documented_bytes() {
+    let e = ExecState {
+        stamp_seq: (1 << 40) + 3,
+        chunk_seq: 9,
+        next_index: 25,
+        flags: ExecState::HAS_STAMP | ExecState::PLAYED,
+    };
+    let mut buf = [0u8; 32];
+    let n = encode_into_slice(e, &mut buf, cfg()).unwrap();
+    let mut expected = Vec::new();
+    expected.extend_from_slice(&((1u64 << 40) + 3).to_le_bytes());
+    expected.extend_from_slice(&9u64.to_le_bytes());
+    expected.extend_from_slice(&25u32.to_le_bytes());
+    expected.extend_from_slice(&5u32.to_le_bytes());
+    assert_eq!(&buf[..n], expected.as_slice());
+    let (back, _): (ExecState, usize) = decode_from_slice(&buf[..n], cfg()).unwrap();
+    assert_eq!(back, e);
 }
 
 #[test]

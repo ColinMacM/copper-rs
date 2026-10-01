@@ -78,7 +78,7 @@ macro_rules! suite {
                 drop(app);
                 let mut r = reader(base, UnifiedLogType::CopperList);
                 copperlists_reader::<default::CuStampedDataSet>(&mut r)
-                    .map(|cl| out_of(cl.msgs.get_gov_output()))
+                    .map(|cl| out_of(cl.msgs.get_gov_output_0()))
                     .collect()
             }
 

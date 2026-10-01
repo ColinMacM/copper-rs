@@ -1,4 +1,4 @@
-use crate::payloads::{ActionChunk, CHUNK_LEN, JOINTS, ObsStamp};
+use crate::payloads::{ActionChunk, CHUNK_LEN, ExecState, JOINTS, ObsStamp};
 use cu29::bincode::de::Decoder;
 use cu29::bincode::enc::Encoder;
 use cu29::bincode::error::{DecodeError, EncodeError};
@@ -87,6 +87,7 @@ pub struct GovernorCore {
     pub switches: u32,
     pub switch_jump_max: f32,
     pub switch_jump_sum: f32,
+    exec: ExecState,
 }
 
 #[inline]
@@ -131,6 +132,7 @@ impl GovernorCore {
             switches: 0,
             switch_jump_max: 0.0,
             switch_jump_sum: 0.0,
+            exec: ExecState::default(),
         }
     }
 
@@ -199,6 +201,7 @@ impl GovernorCore {
         if let Some(seq) = stamp {
             self.push_obs(seq, now);
         }
+        self.note_exec(stamp, false);
         let p = &self.params;
         let meas = match feedback {
             Some(f) if f.len() >= JOINTS && f[..JOINTS].iter().all(|x| x.is_finite()) => {
@@ -223,6 +226,7 @@ impl GovernorCore {
         }
         if let Some(c) = chunk {
             self.offer(now, c);
+            self.note_exec(stamp, false);
         }
         if meas.is_none() {
             // Without a measurement the lead window cannot be applied and a failed read may mean
@@ -236,12 +240,14 @@ impl GovernorCore {
         let mut target = self.goal;
         if self.active && now.saturating_sub(self.last_accept_ns) > p.hold_deadline_ns {
             self.active = false;
+            self.exec.flags &= !ExecState::CHUNK_ACTIVE;
             status = Status::HoldExpired;
         } else if self.active {
             let start = self.cursor as usize * JOINTS;
             let v = self.chunk.as_slice();
             if start + JOINTS <= v.len() {
                 target.copy_from_slice(&v[start..start + JOINTS]);
+                self.exec.flags |= ExecState::PLAYED;
                 if self.switched && self.have_target {
                     let jump = target
                         .iter()
@@ -275,6 +281,30 @@ impl GovernorCore {
             self.goal[j] = clamp(self.goal[j] + d, p.min[j], p.max[j]);
         }
         (Some(self.goal), status)
+    }
+
+    /// Which chunk is executing and where, as of the last `step`.
+    pub fn exec_state(&self) -> ExecState {
+        self.exec
+    }
+
+    fn note_exec(&mut self, stamp: Option<u64>, played: bool) {
+        let mut flags = 0;
+        if stamp.is_some() {
+            flags |= ExecState::HAS_STAMP;
+        }
+        if self.active {
+            flags |= ExecState::CHUNK_ACTIVE;
+        }
+        if played {
+            flags |= ExecState::PLAYED;
+        }
+        self.exec = ExecState {
+            stamp_seq: stamp.unwrap_or(0),
+            chunk_seq: self.last_seq,
+            next_index: self.cursor,
+            flags,
+        };
     }
 
     pub fn goal(&self) -> Option<[f32; JOINTS]> {
@@ -438,7 +468,7 @@ impl Freezable for ActionGovernor {
 impl CuTask for ActionGovernor {
     type Resources<'r> = ();
     type Input<'m> = input_msg!('m, ActionChunk, JointPositions, ObsStamp);
-    type Output<'m> = output_msg!(JointPositions);
+    type Output<'m> = output_msg!(JointPositions, ExecState);
 
     fn new(config: Option<&ComponentConfig>, _resources: Self::Resources<'_>) -> CuResult<Self> {
         let config = config.ok_or_else(|| CuError::from("governor: config required"))?;
@@ -458,6 +488,7 @@ impl CuTask for ActionGovernor {
             Tov::Time(t) if self.core.params.time_from_feedback => t.as_nanos(),
             _ => ctx.now().as_nanos(),
         };
+        let (goal_out, exec_out) = output;
         let (goal, status) = self.core.step(
             now,
             stamp.payload().map(|s| s.seq),
@@ -468,12 +499,14 @@ impl CuTask for ActionGovernor {
             Some(g) => {
                 let mut arr = JointPositions::new();
                 arr.fill_from_iter(g);
-                output.set_payload(arr);
-                output.tov = Tov::Time(CuTime(now));
+                goal_out.set_payload(arr);
+                goal_out.tov = Tov::Time(CuTime(now));
             }
-            None => output.clear_payload(),
+            None => goal_out.clear_payload(),
         }
-        output.metadata.set_status(status.as_str());
+        goal_out.metadata.set_status(status.as_str());
+        exec_out.set_payload(self.core.exec_state());
+        exec_out.tov = Tov::Time(CuTime(now));
         Ok(())
     }
 }
@@ -704,6 +737,51 @@ mod tests {
                 "delay {delay}"
             );
         }
+    }
+
+    #[test]
+    fn the_exec_state_names_the_active_chunk_and_the_step_played() {
+        let mut g = core();
+        let rows = [[0.01; JOINTS], [0.02; JOINTS], [0.03; JOINTS]];
+        g.step(0, Some(4), None, Some(&Z));
+        let e = g.exec_state();
+        assert!(e.has(ExecState::HAS_STAMP) && !e.has(ExecState::CHUNK_ACTIVE));
+        assert_eq!(e.stamp_seq, 4);
+        // accepted and played in the same cycle: step 0 of the chunk answering observation 4
+        g.step(MS, None, Some(&chunk(4, &rows)), Some(&Z));
+        let e = g.exec_state();
+        assert_eq!((e.chunk_seq, e.next_index), (4, 0));
+        assert!(e.has(ExecState::CHUNK_ACTIVE) && e.has(ExecState::PLAYED));
+        assert!(!e.has(ExecState::HAS_STAMP));
+        g.step(2 * MS, None, None, Some(&Z));
+        assert_eq!(g.exec_state().next_index, 1);
+        // a cycle without a measurement holds: the index stays where the next step will play
+        g.step(3 * MS, None, None, None);
+        let e = g.exec_state();
+        assert_eq!(e.next_index, 2);
+        assert!(!e.has(ExecState::PLAYED));
+        g.step(4 * MS, None, None, Some(&Z));
+        assert_eq!(g.exec_state().next_index, 2);
+        // exhausted: still active, no step played
+        g.step(5 * MS, None, None, Some(&Z));
+        let e = g.exec_state();
+        assert!(e.has(ExecState::CHUNK_ACTIVE) && !e.has(ExecState::PLAYED));
+        // expired: no longer active
+        g.step(400 * MS, None, None, Some(&Z));
+        assert!(!g.exec_state().has(ExecState::CHUNK_ACTIVE));
+    }
+
+    #[test]
+    fn a_late_chunk_reports_the_steps_that_elapsed_as_its_first_index() {
+        let mut p = core().params;
+        p.cycle_ns = MS;
+        let mut g = GovernorCore::new(p);
+        g.step(0, Some(1), None, Some(&Z));
+        g.step(MS, None, None, Some(&Z));
+        g.step(2 * MS, None, None, Some(&Z));
+        g.step(3 * MS, None, Some(&ramp_chunk(1, 10)), Some(&Z));
+        // 3 cycles after observation 1, step 3 of its chunk plays: the observed delay
+        assert_eq!(g.exec_state().next_index, 3);
     }
 
     #[test]

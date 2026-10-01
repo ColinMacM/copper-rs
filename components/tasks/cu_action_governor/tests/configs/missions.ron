@@ -15,6 +15,7 @@
         (src: "fb", dst: "gov", msg: "cu_action_governor::governor::JointPositions", missions: ["policy"]),
         (src: "stamp", dst: "gov", msg: "cu_action_governor::ObsStamp", missions: ["policy"]),
         (src: "gov", dst: "sink", msg: "cu_action_governor::governor::JointPositions", missions: ["policy"]),
+        (src: "gov", dst: "__nc__", msg: "cu_action_governor::ExecState", missions: ["policy"]),
     ],
     logging: (slab_size_mib: 64, section_size_mib: 16, keyframe_interval: 8),
 )

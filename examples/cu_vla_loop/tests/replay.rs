@@ -29,7 +29,7 @@ fn read_outputs(base: &Path) -> Vec<Out> {
     let mut reader = UnifiedLoggerIOReader::new(r, UnifiedLogType::CopperList);
     copperlists_reader::<default::CuStampedDataSet>(&mut reader)
         .map(|cl| {
-            let m = cl.msgs.get_gov_output();
+            let m = cl.msgs.get_gov_output_0();
             (
                 m.payload()
                     .map(|p| p.as_slice().iter().map(|f| f.to_bits()).collect()),

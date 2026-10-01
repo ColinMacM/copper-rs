@@ -26,6 +26,40 @@ pub struct ObsStamp {
     pub seq: u64,
 }
 
+/// What the governor is executing, emitted every cycle after the observation stamp of that
+/// cycle. A policy that overlaps inference with execution (real-time chunking) needs the
+/// actions of its previous chunk that have not been played yet; this says which chunk is
+/// active and which of its steps is played next.
+///
+/// Wire format: `stamp_seq: u64`, `chunk_seq: u64`, `next_index: u32`, `flags: u32`.
+#[derive(
+    Default, Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Encode, Decode, Reflect,
+)]
+pub struct ExecState {
+    /// `seq` of the observation stamped this cycle; valid when [`ExecState::HAS_STAMP`] is set.
+    pub stamp_seq: u64,
+    /// `obs_seq` of the active chunk; valid when [`ExecState::CHUNK_ACTIVE`] is set.
+    pub chunk_seq: u64,
+    /// Index, within the active chunk, of the step played this cycle or, if the cycle held,
+    /// of the step that plays next. Step `i` of the chunk answering observation `k` belongs to
+    /// the cycle of `k` plus `i`, so this is also the chunk's offset from that observation.
+    pub next_index: u32,
+    pub flags: u32,
+}
+
+impl ExecState {
+    pub const HAS_STAMP: u32 = 1;
+    /// A chunk was accepted and has not expired; it may still be exhausted.
+    pub const CHUNK_ACTIVE: u32 = 2;
+    /// A step of the chunk was played this cycle.
+    pub const PLAYED: u32 = 4;
+
+    #[must_use]
+    pub fn has(&self, flag: u32) -> bool {
+        self.flags & flag != 0
+    }
+}
+
 /// Wire format (little-endian, fixed-width integers), shared with the Python runner:
 ///
 /// `ActionChunk`: `obs_seq: u64`, `len: u32`, `len` x `f32`.

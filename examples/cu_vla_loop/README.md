@@ -54,6 +54,52 @@ Each figure is one cycle: the chunk is first seen by the next cycle, so the meas
 resolve less than a period, and the link plus Python takes less than that. A real policy adds its
 inference time, which is not measured here.
 
+## Real-time chunking
+
+`python/vla_runner/rtc.py` implements Real-Time Chunking (Black, Galliker, Levine,
+[arXiv 2506.07339](https://arxiv.org/abs/2506.07339)) from the paper: pseudoinverse-guided flow
+matching (Eq. 2-4) with the soft mask of Eq. 5 and the clipped guidance weight, and the
+bookkeeping of Algorithm 1 (`Chunker`: delay buffer, execution horizon, when to start the next
+inference). While a chunk executes, the next one is generated with its first `d` actions frozen
+to the executing chunk's unplayed actions and the rest inpainted to agree with them.
+
+The governor reports what it executes every cycle as an `ExecState` on `vla/exec`: which chunk
+is active and which step plays next. The runner reads the previous chunk's unplayed remainder
+and the delay each chunk really had from that, so neither is counted or assumed.
+
+```bash
+python -m vla_runner --policy flow --checkpoint flow.pt --connect-port P --rtc on   # RTC
+python -m vla_runner --policy flow --checkpoint flow.pt --connect-port P --rtc off  # naive async
+python -m vla_runner.flow_policy --out flow.pt                                      # train the demo policy
+```
+
+`--rtc off` keeps the same asynchronous schedule and samples each chunk freely, the paper's
+naive baseline. The governor's `hold_deadline_ms` must exceed the time a chunk plays before the
+next is computed (`s_min` steps); the example's default of 500 ms is for one chunk per
+observation, and `run_configured` overrides it.
+
+The demo policy (`flow_policy.py`) is a small flow-matching network trained on synthetic
+demonstrations that fork: the same path, then a detour to the left or right. It learns the first
+12 DCT coefficients of each joint; the exact velocity of the remaining high frequencies is added
+analytically. It stands in for a VLA, which this repository does not contain.
+
+What the tests establish:
+
+- `tests/test_rtc.py`: the mask is Eq. 5, the guidance weight is Eq. 2 (4.25 at tau = 0.2, as in
+  the paper's Fig. 7), the autodiff term equals a finite-difference Jacobian product, and on a
+  Gaussian flow with a closed-form solution the guided sample matches the frozen prefix and
+  follows the exact conditional mean.
+- `tests/test_rtc_sim.py`: over 40 simulated episodes per setting the hand-over jump is smaller
+  with RTC than with the naive baseline, and the gap grows with the delay; with the guidance
+  weight at zero RTC equals the baseline exactly.
+- `tests/rtc.rs`: the Copper loop, a Python process and the trained policy run RTC end to end:
+  guided chunks flow, the delay is measured from `ExecState`, goals stay inside the governor's limits.
+
+In a first 12-episode measurement the mean hand-over jump was 44 ticks with RTC against 74
+naive at a delay of 8 cycles, and 50 against 93 at 12 (`rtc_sim.compare` reproduces it). In the
+single end-to-end run the two were about equal, since one run holds one fork: the end-to-end test
+checks the plumbing, not the gain.
+
 ## Units
 
 The arm bridge runs with `units: "raw"`, so the wire carries servo ticks. The runner converts to

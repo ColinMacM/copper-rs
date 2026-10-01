@@ -10,7 +10,7 @@ use cu29::prelude::*;
 use std::sync::{Arc, Mutex};
 
 pub use cu_action_governor::JointPositions;
-use cu_action_governor::{ObsPacket, ObsStamp};
+use cu_action_governor::{ExecState, ObsPacket, ObsStamp};
 pub use cu_policy_link::LinkStatus;
 
 /// Every goal the mock arm received and every position it reported, one entry per cycle.
@@ -86,6 +86,7 @@ pub mod bridges {
         pub struct LinkTx : LinkTxId {
             obs => ObsPacket = "vla/obs",
             img => CuImage<Vec<u8>> = "vla/img",
+            exec => ExecState = "vla/exec",
         }
     }
     rx_channels! {
@@ -424,6 +425,22 @@ pub fn run_hooked(
     hz: f64,
     log_path: &std::path::Path,
     zenoh_json: &str,
+    before: impl FnMut(usize),
+    after: impl FnMut(usize),
+) -> CuResult<()> {
+    run_configured(cycles, hz, log_path, zenoh_json, &[], before, after)
+}
+
+/// Like [`run_hooked`], with governor settings replaced by `governor` (key, value) pairs.
+/// Real-time chunking needs a longer `hold_deadline_ms` than the default: the governor stops
+/// playing a chunk that was not replaced within that time, and RTC lets a chunk play for its
+/// minimum execution horizon before the next one is computed.
+pub fn run_configured(
+    cycles: usize,
+    hz: f64,
+    log_path: &std::path::Path,
+    zenoh_json: &str,
+    governor: &[(&str, f64)],
     mut before: impl FnMut(usize),
     mut after: impl FnMut(usize),
 ) -> CuResult<()> {
@@ -439,6 +456,18 @@ pub fn run_hooked(
     link.config
         .get_or_insert_with(ComponentConfig::default)
         .set("zenoh_config_json", zenoh_json.to_string());
+    if !governor.is_empty() {
+        let graph = config.get_graph_mut(None)?;
+        let id = graph
+            .get_node_id_by_name("gov")
+            .ok_or_else(|| CuError::from("gov task missing from the configuration"))?;
+        let node = graph
+            .get_node_mut(id)
+            .ok_or_else(|| CuError::from("gov node missing from the graph"))?;
+        for (key, value) in governor {
+            node.set_param(key, *value);
+        }
+    }
     let app = VlaLoopApp::builder()
         .with_log_path(log_path, Some(64 * 1024 * 1024))?
         .with_config(config)

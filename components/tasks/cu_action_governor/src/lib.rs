@@ -10,4 +10,6 @@ pub mod payloads;
 pub mod testkit;
 
 pub use governor::{ActionGovernor, GovernorCore, GovernorParams, JointPositions, Status};
-pub use payloads::{ActionChunk, CHUNK_LEN, JOINTS, MAX_STEPS, OBS_JOINTS, ObsPacket, ObsStamp};
+pub use payloads::{
+    ActionChunk, CHUNK_LEN, ExecState, JOINTS, MAX_STEPS, OBS_JOINTS, ObsPacket, ObsStamp,
+};

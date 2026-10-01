@@ -3,7 +3,7 @@
 //! with adversarial inputs and (2) whole `run_one_iteration`s of the graph with and
 //! without the governor.
 use cu_action_governor::governor::{ActionGovernor, GovernorParams, JointPositions};
-use cu_action_governor::{ActionChunk, JOINTS, MAX_STEPS, ObsStamp};
+use cu_action_governor::{ActionChunk, ExecState, JOINTS, MAX_STEPS, ObsStamp};
 use cu29::prelude::*;
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
@@ -69,7 +69,10 @@ fn params() -> GovernorParams {
 fn process_allocates_nothing_on_every_path() {
     let mut gov = ActionGovernor::from_params(params());
     let (ctx, _clock) = CuContext::new_mock_clock();
-    let mut out = CuMsg::<JointPositions>::default();
+    let mut out = (
+        CuMsg::<JointPositions>::default(),
+        CuMsg::<ExecState>::default(),
+    );
     let mut fb = CuMsg::<JointPositions>::default();
     let mut chunk = CuMsg::<ActionChunk>::default();
     let mut stamp = CuMsg::<ObsStamp>::default();

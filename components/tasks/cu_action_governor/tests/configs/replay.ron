@@ -11,6 +11,7 @@
         (src: "fb", dst: "gov", msg: "cu_action_governor::governor::JointPositions"),
         (src: "stamp", dst: "gov", msg: "cu_action_governor::ObsStamp"),
         (src: "gov", dst: "sink", msg: "cu_action_governor::governor::JointPositions"),
+        (src: "gov", dst: "__nc__", msg: "cu_action_governor::ExecState"),
     ],
     logging: (slab_size_mib: 64, section_size_mib: 16, keyframe_interval: 8),
 )

@@ -2,8 +2,10 @@
 
 ObsPacket   : seq u64 | tov_ns u64 | len u32 | len x f32
 Image       : seq u64 | tov_ns u64 | width u32 | height u32 | stride u32 | pixel_format [4]u8 | len u32 | len x u8
+ExecState   : stamp_seq u64 | chunk_seq u64 | next_index u32 | flags u32
 ActionChunk : obs_seq u64 | len u32 | len x f32   (row-major, JOINTS values per step)
 """
+import collections
 import struct
 
 JOINTS = 6
@@ -73,3 +75,35 @@ def check_frame(data, stats):
         stats["last_frame_tov"] = tov_ns
     else:
         stats["bad_frames"] += 1
+
+
+_EXEC = struct.Struct("<QQII")
+HAS_STAMP, CHUNK_ACTIVE, PLAYED = 1, 2, 4
+
+
+class Exec(collections.namedtuple("Exec", "stamp_seq chunk_seq next_index flags")):
+    """What the governor executes: the active chunk and the step that plays next."""
+
+    __slots__ = ()
+
+    @property
+    def has_stamp(self):
+        return bool(self.flags & HAS_STAMP)
+
+    @property
+    def chunk_active(self):
+        return bool(self.flags & CHUNK_ACTIVE)
+
+    @property
+    def played(self):
+        return bool(self.flags & PLAYED)
+
+
+def decode_exec(data):
+    if len(data) != _EXEC.size:
+        raise ValueError(f"exec state is {len(data)} bytes, expected {_EXEC.size}")
+    return Exec(*_EXEC.unpack(data))
+
+
+def encode_exec(stamp_seq, chunk_seq, next_index, flags):
+    return _EXEC.pack(stamp_seq, chunk_seq, next_index, flags)
