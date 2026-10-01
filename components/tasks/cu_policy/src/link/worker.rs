@@ -8,7 +8,8 @@ use cu29::prelude::*;
 use rtrb::Consumer;
 use zenoh::Config;
 
-use crate::{RX_SLOT_BYTES, TX_SLOT_BYTES};
+use super::{RX_SLOT_BYTES, TX_SLOT_BYTES};
+use crate::wire::{IMAGE_HEADER_BYTES, ImageHeader};
 
 /// Counters, all monotonic.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -95,9 +96,6 @@ pub(crate) struct ImgSlot {
     pub(crate) handle: CuHandle<Vec<u8>>,
 }
 
-/// Bytes before the pixels of an image message.
-pub const IMAGE_HEADER_BYTES: usize = 8 + 8 + 4 + 4 + 4 + 4 + 4;
-
 impl ImgSlot {
     pub(crate) fn from_image(channel: u8, tov_ns: u64, image: &CuImage<Vec<u8>>) -> Self {
         Self {
@@ -112,8 +110,8 @@ impl ImgSlot {
         }
     }
 
-    /// `seq u64 | tov_ns u64 | width u32 | height u32 | stride u32 | pixel_format [u8;4] | len u32 | pixels`
-    /// (little-endian). `None` if the buffer is shorter than the format says.
+    /// The header ([`ImageHeader`]) followed by the pixels. `None` if the buffer is shorter than
+    /// the format says.
     fn encode(&self) -> Option<Vec<u8>> {
         let len = (self.stride as usize).checked_mul(self.height as usize)?;
         self.handle.with_inner(|inner| {
@@ -121,14 +119,17 @@ impl ImgSlot {
             if data.len() < len {
                 return None;
             }
+            let header = ImageHeader {
+                seq: self.seq,
+                tov_ns: self.tov_ns,
+                width: self.width,
+                height: self.height,
+                stride: self.stride,
+                pixel_format: self.pixel_format,
+                len: u32::try_from(len).ok()?,
+            };
             let mut wire = Vec::with_capacity(IMAGE_HEADER_BYTES + len);
-            wire.extend_from_slice(&self.seq.to_le_bytes());
-            wire.extend_from_slice(&self.tov_ns.to_le_bytes());
-            wire.extend_from_slice(&self.width.to_le_bytes());
-            wire.extend_from_slice(&self.height.to_le_bytes());
-            wire.extend_from_slice(&self.stride.to_le_bytes());
-            wire.extend_from_slice(&self.pixel_format);
-            wire.extend_from_slice(&u32::try_from(len).ok()?.to_le_bytes());
+            wire.extend_from_slice(&header.to_bytes());
             wire.extend_from_slice(&data[..len]);
             Some(wire)
         })

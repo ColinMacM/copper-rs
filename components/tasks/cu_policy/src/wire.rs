@@ -11,8 +11,10 @@
 //! Each message has one definition, a pair of functions generic over [`Sink`] and [`Source`].
 //! [`SliceWriter`] and [`SliceReader`] put it on a byte slice; an adapter for another encoder
 //! (the Copper log's) implements the two traits and gets the same layout without a copy.
-//! Decoding reads into fixed-capacity arrays on the stack. A length field above the capacity
-//! is an error, and the capacity is checked before any value is read.
+//! The `read_*` functions fill buffers the caller provides, so decoding makes no copy of the
+//! values and never allocates; the owned [`Obs`], [`Chunk`] and [`Request`] and the `decode_*`
+//! functions serve tools and tests. A length field above the capacity is an error, and the
+//! capacity is checked before any value is read.
 
 use core::fmt;
 
@@ -222,17 +224,24 @@ pub fn write_obs<S: Sink>(s: &mut S, seq: u64, tov_ns: u64, state: &[f32]) -> Re
     write_f32s(s, state, OBS_JOINTS)
 }
 
-pub fn read_obs<S: Source>(s: &mut S) -> Result<Obs, S::Error> {
+/// The scalar fields of an observation read by [`read_obs`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ObsHeader {
+    pub seq: u64,
+    pub tov_ns: u64,
+    /// Values written into the buffer.
+    pub len: usize,
+}
+
+/// Reads an observation; its values go to the front of `state`.
+pub fn read_obs<S: Source>(
+    s: &mut S,
+    state: &mut [f32; OBS_JOINTS],
+) -> Result<ObsHeader, S::Error> {
     let seq = s.get_u64()?;
     let tov_ns = s.get_u64()?;
-    let mut state = [0f32; OBS_JOINTS];
-    let len = read_f32s(s, &mut state)?;
-    Ok(Obs {
-        seq,
-        tov_ns,
-        len,
-        state,
-    })
+    let len = read_f32s(s, state)?;
+    Ok(ObsHeader { seq, tov_ns, len })
 }
 
 /// An action chunk: steps of [`JOINTS`] values, row-major, answering the observation `obs_seq`.
@@ -256,15 +265,22 @@ pub fn write_chunk<S: Sink>(s: &mut S, obs_seq: u64, values: &[f32]) -> Result<(
     write_f32s(s, values, CHUNK_LEN)
 }
 
-pub fn read_chunk<S: Source>(s: &mut S) -> Result<Chunk, S::Error> {
+/// The scalar fields of a chunk read by [`read_chunk`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChunkHeader {
+    pub obs_seq: u64,
+    /// Values written into the buffer.
+    pub len: usize,
+}
+
+/// Reads a chunk; its values go to the front of `values`.
+pub fn read_chunk<S: Source>(
+    s: &mut S,
+    values: &mut [f32; CHUNK_LEN],
+) -> Result<ChunkHeader, S::Error> {
     let obs_seq = s.get_u64()?;
-    let mut values = [0f32; CHUNK_LEN];
-    let len = read_f32s(s, &mut values)?;
-    Ok(Chunk {
-        obs_seq,
-        len,
-        values,
-    })
+    let len = read_f32s(s, values)?;
+    Ok(ChunkHeader { obs_seq, len })
 }
 
 /// What the governor executes, sent every cycle.
@@ -346,24 +362,39 @@ pub fn write_request<S: Sink>(
     write_f32s(s, previous, CHUNK_LEN)
 }
 
-pub fn read_request<S: Source>(s: &mut S) -> Result<Request, S::Error> {
+/// The scalar fields of a request read by [`read_request`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RequestHeader {
+    pub obs_seq: u64,
+    pub delay: u32,
+    pub executed: u32,
+    pub reason: u32,
+    /// Values written into the state buffer.
+    pub state_len: usize,
+    /// Values written into the previous buffer.
+    pub previous_len: usize,
+}
+
+/// Reads a request; the state goes to the front of `state` and the unplayed remainder to the
+/// front of `previous`.
+pub fn read_request<S: Source>(
+    s: &mut S,
+    state: &mut [f32; OBS_JOINTS],
+    previous: &mut [f32; CHUNK_LEN],
+) -> Result<RequestHeader, S::Error> {
     let obs_seq = s.get_u64()?;
     let delay = s.get_u32()?;
     let executed = s.get_u32()?;
     let reason = s.get_u32()?;
-    let mut state = [0f32; OBS_JOINTS];
-    let state_len = read_f32s(s, &mut state)?;
-    let mut previous = [0f32; CHUNK_LEN];
-    let previous_len = read_f32s(s, &mut previous)?;
-    Ok(Request {
+    let state_len = read_f32s(s, state)?;
+    let previous_len = read_f32s(s, previous)?;
+    Ok(RequestHeader {
         obs_seq,
         delay,
         executed,
         reason,
         state_len,
-        state,
         previous_len,
-        previous,
     })
 }
 
@@ -426,7 +457,14 @@ pub fn encode_obs(
 /// Decodes an observation from the start of `bytes`; returns it and the bytes consumed.
 pub fn decode_obs(bytes: &[u8]) -> Result<(Obs, usize), WireError> {
     let mut r = SliceReader::new(bytes);
-    let obs = read_obs(&mut r)?;
+    let mut state = [0f32; OBS_JOINTS];
+    let h = read_obs(&mut r, &mut state)?;
+    let obs = Obs {
+        seq: h.seq,
+        tov_ns: h.tov_ns,
+        len: h.len,
+        state,
+    };
     Ok((obs, r.consumed()))
 }
 
@@ -440,7 +478,13 @@ pub fn encode_chunk(out: &mut [u8], obs_seq: u64, values: &[f32]) -> Result<usiz
 /// Decodes a chunk from the start of `bytes`; returns it and the bytes consumed.
 pub fn decode_chunk(bytes: &[u8]) -> Result<(Chunk, usize), WireError> {
     let mut r = SliceReader::new(bytes);
-    let chunk = read_chunk(&mut r)?;
+    let mut values = [0f32; CHUNK_LEN];
+    let h = read_chunk(&mut r, &mut values)?;
+    let chunk = Chunk {
+        obs_seq: h.obs_seq,
+        len: h.len,
+        values,
+    };
     Ok((chunk, r.consumed()))
 }
 
@@ -476,6 +520,18 @@ pub fn encode_request(
 /// Decodes a request from the start of `bytes`; returns it and the bytes consumed.
 pub fn decode_request(bytes: &[u8]) -> Result<(Request, usize), WireError> {
     let mut r = SliceReader::new(bytes);
-    let request = read_request(&mut r)?;
+    let mut state = [0f32; OBS_JOINTS];
+    let mut previous = [0f32; CHUNK_LEN];
+    let h = read_request(&mut r, &mut state, &mut previous)?;
+    let request = Request {
+        obs_seq: h.obs_seq,
+        delay: h.delay,
+        executed: h.executed,
+        reason: h.reason,
+        state_len: h.state_len,
+        state,
+        previous_len: h.previous_len,
+        previous,
+    };
     Ok((request, r.consumed()))
 }

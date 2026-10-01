@@ -1,0 +1,18 @@
+(
+    tasks: [
+        (id: "stamp", type: "cu_policy::testkit::StampSrc", run_in_sim: true,),
+        (id: "fb", type: "cu_policy::testkit::FeedbackSrc", run_in_sim: true,),
+        (id: "chunk", type: "cu_policy::testkit::ChunkSrc", config: {"chunk_every": 20}, run_in_sim: true,),
+        (id: "gov", type: "cu_policy::ActionGovernor", config: {"time_from_feedback": false, "min_0": -1.0, "max_0": 1.0, "min_1": -1.0, "max_1": 1.0, "min_2": -1.0, "max_2": 1.0, "min_3": -1.0, "max_3": 1.0, "min_4": -1.0, "max_4": 1.0, "min_5": -1.0, "max_5": 1.0, "max_step": 0.02, "max_lead": 0.3, "max_age_ms": 150.0, "hold_deadline_ms": 300.0, "cycle_ms": 10.0}, run_in_sim: true,),
+        (id: "sink", type: "cu_policy::testkit::GoalSink", run_in_sim: true,),
+    ],
+    cnx: [
+        (src: "chunk", dst: "gov", msg: "cu_policy::ActionChunk"),
+        (src: "fb", dst: "gov", msg: "cu_policy::governor::JointPositions"),
+        (src: "stamp", dst: "gov", msg: "cu_policy::ObsStamp"),
+        (src: "gov", dst: "sink", msg: "cu_policy::governor::JointPositions"),
+        (src: "gov", dst: "__nc__", msg: "cu_policy::ExecState"),
+        (src: "gov", dst: "__nc__", msg: "cu_policy::InferenceRequest"),
+    ],
+    logging: (slab_size_mib: 64, section_size_mib: 16, keyframe_interval: 8),
+)

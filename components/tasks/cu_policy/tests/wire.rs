@@ -1,9 +1,7 @@
 //! The byte layout the Python runner relies on, checked from the Rust side.
 //! ObsPacket: seq u64 | tov_ns u64 | len u32 | len x f32. ActionChunk: obs_seq u64 | len u32 | len x f32, little-endian, fixed-width integers.
 
-use cu_action_governor::{
-    ActionChunk, CHUNK_LEN, ExecState, InferenceRequest, OBS_JOINTS, ObsPacket,
-};
+use cu_policy::{ActionChunk, CHUNK_LEN, ExecState, InferenceRequest, OBS_JOINTS, ObsPacket};
 use cu29::bincode::{config, decode_from_slice, encode_into_slice};
 use cu29::prelude::CuArray;
 

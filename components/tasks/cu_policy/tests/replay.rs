@@ -16,7 +16,7 @@ const JITTER_NS: u64 = 40_000;
 /// (payload bits, status) of the governor output for one copperlist.
 type Out = (Option<Vec<u32>>, String);
 
-fn out_of(msg: &CuMsg<cu_action_governor::governor::JointPositions>) -> Out {
+fn out_of(msg: &CuMsg<cu_policy::governor::JointPositions>) -> Out {
     (
         msg.payload()
             .map(|p| p.as_slice().iter().map(|f| f.to_bits()).collect()),

@@ -9,9 +9,9 @@ use cu_sensor_payloads::{CuImage, CuImageBufferFormat};
 use cu29::prelude::*;
 use std::sync::{Arc, Mutex};
 
-pub use cu_action_governor::JointPositions;
-use cu_action_governor::{ExecState, InferenceRequest, ObsPacket, ObsStamp};
-pub use cu_policy_link::LinkStatus;
+pub use cu_policy::JointPositions;
+pub use cu_policy::link::LinkStatus;
+use cu_policy::{ExecState, InferenceRequest, ObsPacket, ObsStamp};
 
 /// Every goal the mock arm received and every position it reported, one entry per cycle.
 /// Reserved up front so recording does not allocate on the cycle.
@@ -77,7 +77,7 @@ pub fn pattern_offset(seq: u64) -> usize {
 
 pub mod bridges {
     use super::*;
-    use cu_action_governor::ActionChunk;
+    use cu_policy::ActionChunk;
 
     tx_channels! { pub struct ArmTx : ArmTxId { goals => JointPositions = "goals" } }
     rx_channels! { pub struct ArmRx : ArmRxId { positions => JointPositions = "positions" } }
@@ -97,7 +97,7 @@ pub mod bridges {
         }
     }
 
-    pub type PolicyLink = cu_policy_link::PolicyLinkBridge<LinkTx, LinkRx>;
+    pub type PolicyLink = cu_policy::link::PolicyLinkBridge<LinkTx, LinkRx>;
 
     #[derive(Reflect)]
     #[reflect(from_reflect = false)]
@@ -316,7 +316,7 @@ pub mod tasks {
 
     impl CuSinkTask for ChunkProbe {
         type Resources<'r> = ();
-        type Input<'m> = input_msg!(cu_action_governor::ActionChunk);
+        type Input<'m> = input_msg!(cu_policy::ActionChunk);
 
         fn new(_c: Option<&ComponentConfig>, _r: Self::Resources<'_>) -> CuResult<Self> {
             Ok(Self {

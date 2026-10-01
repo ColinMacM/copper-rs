@@ -26,9 +26,10 @@ use cu29::bincode::config::{Configuration, Fixint, LittleEndian, NoLimit};
 use cu29::prelude::*;
 use rtrb::{Producer, RingBuffer};
 
+pub use crate::wire::IMAGE_HEADER_BYTES;
 pub use status::LinkStatus;
 use status::StatusEmitter;
-pub use worker::{IMAGE_HEADER_BYTES, LinkStats};
+pub use worker::LinkStats;
 use worker::{ImgSlot, RxMailbox, SessionSettings, Shared, TxSlot, WorkerChannels};
 
 /// Largest encoded message on a Tx channel.
@@ -110,7 +111,7 @@ where
     Rx::Id: Send + Sync + 'static,
 {
     fn type_path() -> &'static str {
-        "cu_policy_link::PolicyLinkBridge"
+        "cu_policy::link::PolicyLinkBridge"
     }
     fn short_type_path() -> &'static str {
         "PolicyLinkBridge"
@@ -119,10 +120,10 @@ where
         Some("PolicyLinkBridge")
     }
     fn crate_name() -> Option<&'static str> {
-        Some("cu_policy_link")
+        Some("cu_policy")
     }
     fn module_path() -> Option<&'static str> {
-        Some("cu_policy_link")
+        Some("cu_policy::link")
     }
 }
 

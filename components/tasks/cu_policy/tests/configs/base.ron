@@ -1,0 +1,14 @@
+(
+    tasks: [
+        (id: "stamp", type: "cu_policy::testkit::StampSrc",),
+        (id: "fb", type: "cu_policy::testkit::FeedbackSrc",),
+        (id: "chunk", type: "cu_policy::testkit::ChunkSrc", config: {"chunk_every": 20},),
+        (id: "sink", type: "cu_policy::testkit::GoalSink",),
+    ],
+    cnx: [
+        (src: "chunk", dst: "__nc__", msg: "cu_policy::ActionChunk"),
+        (src: "stamp", dst: "__nc__", msg: "cu_policy::ObsStamp"),
+        (src: "fb", dst: "sink", msg: "cu_policy::governor::JointPositions"),
+    ],
+    logging: (slab_size_mib: 64, section_size_mib: 16, keyframe_interval: 8),
+)

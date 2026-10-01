@@ -14,12 +14,35 @@ documentation = "https://docs.rs/cu-policy"
 
 [package.metadata.copper]
 kind = "task"
-domains = ["algorithm/control"]
+domains = ["algorithm/control", "middleware/zenoh"]
 environments = ["host"]
 
 [features]
 default = ["std"]
-std = []
+# The governor, the scheduler and the payloads. Without it the crate is the wire format alone.
+std = ["dep:cu29", "dep:serde", "dep:bincode"]
+# The Zenoh bridge to the policy process.
+link = ["std", "dep:cu-sensor-payloads", "dep:rtrb", "dep:zenoh"]
+# Deterministic synthetic sources and sink used by this crate's tests and benchmarks.
+testkit = ["std"]
+
+[dependencies]
+cu29 = { workspace = true, features = ["reflect"], optional = true }
+serde = { workspace = true, optional = true }
+bincode = { workspace = true, optional = true }
+cu-sensor-payloads = { workspace = true, optional = true }
+rtrb = { version = "0.3.3", optional = true }
+zenoh = { workspace = true, default-features = false, features = ["transport_tcp"], optional = true }
 
 [dev-dependencies]
+cu-policy = { path = ".", features = ["link", "testkit"] }
+cu29-export = { workspace = true }
+cu29-unifiedlog = { workspace = true }
 serde_json = { workspace = true, features = ["std"] }
+tempfile = { workspace = true }
+
+[build-dependencies]
+cu29-build = { workspace = true }
+
+[package.metadata.cargo-shear]
+ignored = ["serde", "bincode"]

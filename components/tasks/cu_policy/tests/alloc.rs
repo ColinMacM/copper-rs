@@ -2,8 +2,8 @@
 //! around the measured region) around (1) the governor task's `process()` called directly
 //! with adversarial inputs and (2) whole `run_one_iteration`s of the graph with and
 //! without the governor.
-use cu_action_governor::governor::{ActionGovernor, GovernorParams, JointPositions, SchedParams};
-use cu_action_governor::{ActionChunk, ExecState, InferenceRequest, JOINTS, MAX_STEPS, ObsStamp};
+use cu_policy::governor::{ActionGovernor, GovernorParams, JointPositions, SchedParams};
+use cu_policy::{ActionChunk, ExecState, InferenceRequest, JOINTS, MAX_STEPS, ObsStamp};
 use cu29::prelude::*;
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;

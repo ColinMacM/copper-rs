@@ -4,7 +4,7 @@ use bincode::{Decode, Encode};
 use cu29::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::worker::LinkStats;
+use super::worker::LinkStats;
 
 /// Counters of one link, all monotonic except `session_up`. A Rx channel configured with
 /// `kind: "status"` carries this message.

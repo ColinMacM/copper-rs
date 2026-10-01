@@ -19,7 +19,7 @@ camera -> link/img ~~Zenoh~~> vla_runner          link/status -> status_probe (l
 
 | Part | Crate / path | Role |
 | --- | --- | --- |
-| Governor | `components/tasks/cu_action_governor` | Rejects non-finite, malformed, stale, out-of-order and unknown-observation chunks; clamps to joint limits; limits per-cycle step and lead over the measurement; holds when no fresh chunk or no measurement arrives. |
+| Governor | `components/tasks/cu_policy` | Rejects non-finite, malformed, stale, out-of-order and unknown-observation chunks; clamps to joint limits; limits per-cycle step and lead over the measurement; holds when no fresh chunk or no measurement arrives. |
 | Link | `components/bridges/cu_policy_link` | Zenoh bridge whose cycle side only copies into fixed slots; a worker thread owns the session. Camera frames cross as a pooled-buffer handle, copied by the worker. Drops are counted, never blocking, and the counters are a `LinkStatus` message in the log. |
 | Runner | `python/vla_runner` | Serves a policy: blocks until the newest observation lands, then sends a chunk. Scripted and LeRobot ACT policies; LeRobot calibration conversion. |
 | Arm | `cu_feetech` | Hardened: goal set to the present position before torque, non-finite goals refused, goals clamped to the calibrated range, failed reads yield no measurement, protective servo errors cut torque, optional goal timeout, torque off on drop. |
