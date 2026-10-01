@@ -36,6 +36,7 @@
                 Tx(id: "obs", route: "vla/obs"),
                 Tx(id: "img", route: "vla/img"),
                 Tx(id: "exec", route: "vla/exec"),
+                Tx(id: "infer", route: "vla/infer"),
                 Rx(id: "action", route: "vla/action"),
                 Rx(id: "status", route: "vla/link_status"),
             ],
@@ -52,6 +53,7 @@
         (src: "link/status", dst: "status_probe", msg: "cu_policy_link::LinkStatus"),
         (src: "gov", dst: "arm/goals", msg: "cu_action_governor::JointPositions"),
         (src: "gov", dst: "link/exec", msg: "cu_action_governor::ExecState"),
+        (src: "gov", dst: "link/infer", msg: "cu_action_governor::InferenceRequest"),
     ],
     logging: (slab_size_mib: 64, section_size_mib: 16, keyframe_interval: 30),
 )

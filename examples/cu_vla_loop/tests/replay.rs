@@ -6,7 +6,7 @@
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-use cu_vla_loop::{bridges, listen_config, run_hooked, tasks};
+use cu_vla_loop::{bridges, listen_config, run_configured, tasks};
 use cu29::prelude::*;
 use cu29::simulation::CuBridgeLifecycleState;
 use cu29_export::copperlists_reader;
@@ -15,8 +15,25 @@ use cu29_unifiedlog::{UnifiedLogger, UnifiedLoggerBuilder, UnifiedLoggerIOReader
 #[copper_runtime(config = "copperconfig.ron", sim_mode = true)]
 struct Replay {}
 
-/// Governor output of one CopperList: goal bits and status.
-type Out = (Option<Vec<u32>>, String);
+/// Governor settings for the scheduler. Recording and replay must agree on them: the replay
+/// re-executes the governor, and the scheduler's decisions are part of what must match.
+const SCHEDULER: &[(&str, f64)] = &[
+    ("sched_s_min", 6.0),
+    ("sched_margin", 2.0),
+    ("sched_d_init", 2.0),
+    ("sched_horizon", 50.0),
+    ("replan_threshold", 60.0),
+    ("hold_deadline_ms", 2500.0),
+    // The crossfade between chunks is state too: the replay must reproduce what it played.
+    ("blend_steps", 3.0),
+];
+
+/// An inference request: observation, delay estimate, steps played, reason, and the bits of the
+/// unplayed remainder it carried.
+type Request = (u64, u32, u32, u32, Vec<u32>);
+
+/// Governor output of one CopperList: goal bits, status and the scheduler's request, if any.
+type Out = (Option<Vec<u32>>, String, Option<Request>);
 
 fn read_outputs(base: &Path) -> Vec<Out> {
     let UnifiedLogger::Read(r) = UnifiedLoggerBuilder::new()
@@ -30,10 +47,20 @@ fn read_outputs(base: &Path) -> Vec<Out> {
     copperlists_reader::<default::CuStampedDataSet>(&mut reader)
         .map(|cl| {
             let m = cl.msgs.get_gov_output_0();
+            let request = cl.msgs.get_gov_output_2().payload().map(|r| {
+                (
+                    r.obs_seq,
+                    r.delay,
+                    r.executed,
+                    r.reason,
+                    r.previous.as_slice().iter().map(|f| f.to_bits()).collect(),
+                )
+            });
             (
                 m.payload()
                     .map(|p| p.as_slice().iter().map(|f| f.to_bits()).collect()),
                 m.metadata.status_txt.0.to_string(),
+                request,
             )
         })
         .collect()
@@ -45,11 +72,12 @@ fn record(dir: &Path) -> usize {
         l.local_addr().unwrap().port()
     };
     let mut child = None;
-    run_hooked(
+    run_configured(
         240,
         30.0,
         &dir.join("rec.copper"),
         &listen_config(port),
+        SCHEDULER,
         |i| {
             if i == 0 {
                 child = Some(
@@ -61,6 +89,11 @@ fn record(dir: &Path) -> usize {
                             &port.to_string(),
                             "--seconds",
                             "12",
+                            // Answering 0.2 s late makes a chunk play for a while before its
+                            // successor arrives, so the scheduler has real work: how often it
+                            // fires must not depend on how fast Python happens to start.
+                            "--delay-s",
+                            "0.2",
                         ])
                         .current_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/python"))
                         .stdout(Stdio::null())
@@ -102,7 +135,7 @@ fn a_recorded_policy_run_replays_identically_without_a_zenoh_session() {
     );
     let moving = recorded
         .iter()
-        .filter(|(g, s)| g.is_some() && s == "play")
+        .filter(|(g, s, _)| g.is_some() && s == "play")
         .count();
     assert!(
         moving > 50,
@@ -117,6 +150,11 @@ fn a_recorded_policy_run_replays_identically_without_a_zenoh_session() {
     };
     let (clock, mock) = RobotClock::mock();
     let mut config = CuConfig::deserialize_ron(&Replay::original_config()).unwrap();
+    let graph = config.get_graph_mut(None).unwrap();
+    let gov = graph.get_node_id_by_name("gov").unwrap();
+    for (key, value) in SCHEDULER {
+        graph.get_node_mut(gov).unwrap().set_param(key, *value);
+    }
     let link = config.bridges.iter_mut().find(|b| b.id == "link").unwrap();
     link.config
         .get_or_insert_with(ComponentConfig::default)
@@ -184,6 +222,20 @@ fn a_recorded_policy_run_replays_identically_without_a_zenoh_session() {
         "{mismatches} of {} cycles differ on replay",
         recorded.len()
     );
+    // The scheduler decided to ask the policy, repeatedly and for more than one reason, and the
+    // replay asked at exactly the same cycles with the same remainder.
+    let asked: Vec<&Request> = recorded.iter().filter_map(|o| o.2.as_ref()).collect();
+    assert!(
+        asked.len() >= 10,
+        "only {} requests were recorded",
+        asked.len()
+    );
+    assert!(
+        asked.iter().any(|r| !r.4.is_empty()),
+        "no request carried an unplayed remainder"
+    );
+    let reasons: std::collections::BTreeSet<u32> = asked.iter().map(|r| r.3).collect();
+    println!("{} requests, reasons {reasons:?}", asked.len());
     // Control: the comparison can fail. Shifted by one cycle it must not match everywhere.
     let shifted = recorded
         .iter()

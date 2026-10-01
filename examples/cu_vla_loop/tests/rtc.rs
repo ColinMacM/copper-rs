@@ -72,6 +72,23 @@ fn stat(out: &str, key: &str) -> f64 {
         .fold(0.0, f64::max)
 }
 
+/// The value printed for `key` in the runner's last progress line that has it. For cumulative
+/// quantities such as a running mean, whose early values rest on a handful of samples.
+fn last_stat(out: &str, key: &str) -> f64 {
+    let needle = format!("\"{key}\": ");
+    out.lines()
+        .filter_map(|l| l.split(&needle).nth(1).map(str::to_owned))
+        .filter_map(|r| {
+            let n: String = r
+                .chars()
+                .take_while(|c| c.is_ascii_digit() || *c == '.')
+                .collect();
+            n.parse::<f64>().ok()
+        })
+        .next_back()
+        .unwrap_or(0.0)
+}
+
 struct Outcome {
     log: String,
     goals: Vec<Option<[f32; 8]>>,
@@ -89,7 +106,16 @@ fn run_policy(use_rtc: bool, delay_s: f64, cycles: usize, seed: u64) -> Outcome 
         HZ,
         &dir.path().join("rtc.copper"),
         &listen_config(port),
-        &[("hold_deadline_ms", 2500.0)],
+        // The scheduler runs in the governor: a chunk plays for at least s_min = 25 cycles
+        // (0.83 s) before the next request, so the hold deadline has to outlast that.
+        &[
+            ("hold_deadline_ms", 2500.0),
+            ("sched_s_min", 25.0),
+            ("sched_margin", 4.0),
+            ("sched_d_init", 3.0),
+            ("sched_horizon", 50.0),
+            ("blend_steps", 3.0),
+        ],
         |i| {
             if i == 0 {
                 child = Some(
@@ -101,6 +127,8 @@ fn run_policy(use_rtc: bool, delay_s: f64, cycles: usize, seed: u64) -> Outcome 
                         .args(["--rtc", if use_rtc { "on" } else { "off" }])
                         .args(["--delay-s", &delay_s.to_string()])
                         .args(["--seed", &seed.to_string()])
+                        // noise indexed by absolute step, and the frozen prefix made exact
+                        .args(["--positional-noise", "--project"])
                         .current_dir(python_dir())
                         .stdout(Stdio::piped())
                         .stderr(Stdio::piped())
@@ -156,14 +184,14 @@ fn the_copper_loop_runs_real_time_chunking_end_to_end() {
     let rtc = run_policy(true, 0.15, 420, 0);
     let naive = run_policy(false, 0.15, 420, 0);
     println!(
-        "rtc: guided {} switches {} mean_jump {} max_jump {} delay {} | naive: switches {} mean_jump {} max_jump {}",
+        "rtc: guided {} switches {} mean_jump {} max_jump {} max_delay {} | naive: switches {} mean_jump {} max_jump {}",
         stat(&rtc.log, "guided"),
         stat(&rtc.log, "switches"),
-        stat(&rtc.log, "mean_jump"),
+        last_stat(&rtc.log, "mean_jump"),
         stat(&rtc.log, "max_jump"),
-        stat(&rtc.log, "delay"),
+        stat(&rtc.log, "max_delay"),
         stat(&naive.log, "switches"),
-        stat(&naive.log, "mean_jump"),
+        last_stat(&naive.log, "mean_jump"),
         stat(&naive.log, "max_jump"),
     );
     assert!(
@@ -177,15 +205,15 @@ fn the_copper_loop_runs_real_time_chunking_end_to_end() {
         "the baseline must not be guided"
     );
     assert!(stat(&rtc.log, "switches") >= 10.0 && stat(&naive.log, "switches") >= 10.0);
-    // The runner measured the delay from the governor's ExecState: more than injected latency.
+    // The governor measured the delay each chunk really had, and it exceeds the injected latency.
     assert!(
-        stat(&rtc.log, "delay") >= 4.0,
+        stat(&rtc.log, "max_delay") >= 4.0,
         "observed delay {}",
-        stat(&rtc.log, "delay")
+        stat(&rtc.log, "max_delay")
     );
     // Not worse than the baseline; the statistics that show the gain are in the simulator tests.
     assert!(
-        stat(&rtc.log, "mean_jump") <= 1.3 * stat(&naive.log, "mean_jump"),
+        last_stat(&rtc.log, "mean_jump") <= 1.3 * last_stat(&naive.log, "mean_jump"),
         "RTC hand-overs are rougher than the baseline's"
     );
     assert_goals_safe(&rtc.goals);

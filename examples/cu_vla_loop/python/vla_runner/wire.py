@@ -2,7 +2,8 @@
 
 ObsPacket   : seq u64 | tov_ns u64 | len u32 | len x f32
 Image       : seq u64 | tov_ns u64 | width u32 | height u32 | stride u32 | pixel_format [4]u8 | len u32 | len x u8
-ExecState   : stamp_seq u64 | chunk_seq u64 | next_index u32 | flags u32
+ExecState   : stamp_seq u64 | chunk_seq u64 | next_index u32 | flags u32 | accept_skip u32 | reject u32 | tracking_err f32
+Request     : obs_seq u64 | delay u32 | executed u32 | reason u32 | state_len u32 | state f32s | prev_len u32 | prev f32s
 ActionChunk : obs_seq u64 | len u32 | len x f32   (row-major, JOINTS values per step)
 """
 import collections
@@ -77,12 +78,21 @@ def check_frame(data, stats):
         stats["bad_frames"] += 1
 
 
-_EXEC = struct.Struct("<QQII")
-HAS_STAMP, CHUNK_ACTIVE, PLAYED = 1, 2, 4
+_EXEC = struct.Struct("<QQIIIIf")
+HAS_STAMP, CHUNK_ACTIVE, PLAYED, ACCEPTED = 1, 2, 4, 8
+REASON_FIRST, REASON_SCHEDULED, REASON_EVENT = 1, 2, 4
 
 
-class Exec(collections.namedtuple("Exec", "stamp_seq chunk_seq next_index flags")):
-    """What the governor executes: the active chunk and the step that plays next."""
+class Exec(
+    collections.namedtuple(
+        "Exec",
+        "stamp_seq chunk_seq next_index flags accept_skip reject tracking_err",
+        defaults=(0, 0, 0.0),
+    )
+):
+    """What the governor executes: the active chunk and the step that plays next, the step an
+    accepted chunk started at (its real delay), why a chunk was refused, and how far the
+    measurement is from the target played last cycle."""
 
     __slots__ = ()
 
@@ -98,6 +108,10 @@ class Exec(collections.namedtuple("Exec", "stamp_seq chunk_seq next_index flags"
     def played(self):
         return bool(self.flags & PLAYED)
 
+    @property
+    def accepted(self):
+        return bool(self.flags & ACCEPTED)
+
 
 def decode_exec(data):
     if len(data) != _EXEC.size:
@@ -105,5 +119,37 @@ def decode_exec(data):
     return Exec(*_EXEC.unpack(data))
 
 
-def encode_exec(stamp_seq, chunk_seq, next_index, flags):
-    return _EXEC.pack(stamp_seq, chunk_seq, next_index, flags)
+def encode_exec(stamp_seq, chunk_seq, next_index, flags, accept_skip=0, reject=0, tracking_err=0.0):
+    return _EXEC.pack(stamp_seq, chunk_seq, next_index, flags, accept_skip, reject, tracking_err)
+
+
+_REQ = struct.Struct("<QIIII")
+Request = collections.namedtuple("Request", "obs_seq delay executed reason state previous")
+
+
+def decode_request(data):
+    """An `InferenceRequest` from the governor's scheduler: the observation, the delay estimate
+    `d`, the steps `s` of the active chunk already played, and the unplayed remainder of it
+    (flat, 6 values per step, empty when nothing is executing)."""
+    if len(data) < _REQ.size + 4:
+        raise ValueError("request shorter than its header")
+    obs_seq, delay, executed, reason, n = _REQ.unpack_from(data)
+    pos = _REQ.size
+    if len(data) < pos + 4 * n + 4:
+        raise ValueError("request truncated in the state")
+    state = list(struct.unpack_from(f"<{n}f", data, pos))
+    pos += 4 * n
+    (m,) = struct.unpack_from("<I", data, pos)
+    pos += 4
+    if len(data) != pos + 4 * m:
+        raise ValueError(f"request length {len(data)} does not match {m} previous values")
+    return Request(obs_seq, delay, executed, reason, state, list(struct.unpack_from(f"<{m}f", data, pos)))
+
+
+def encode_request(obs_seq, delay, executed, reason, state, previous):
+    return (
+        _REQ.pack(obs_seq, delay, executed, reason, len(state))
+        + struct.pack(f"<{len(state)}f", *state)
+        + struct.pack("<I", len(previous))
+        + struct.pack(f"<{len(previous)}f", *previous)
+    )

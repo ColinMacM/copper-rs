@@ -12,8 +12,10 @@ A <- A + v / n (Eq. 1), and action `i` of the chunk answering observation `k` be
 control step `k + i`.
 """
 import collections
+import dataclasses
 import math
 
+import numpy as np
 import torch
 
 
@@ -48,16 +50,27 @@ def guidance_weight(tau, beta):
     return min(float(beta), (1.0 - tau) / (tau * r2))
 
 
-def sample(velocity, obs, horizon, dim, steps, generator=None):
+def positional_noise(seed, start, horizon, dim):
+    """Noise indexed by absolute control step: row `i` is a fixed function of `(seed, start + i)`.
+    Two chunks that overlap in time therefore start their overlapping steps from the same noise,
+    with nothing to remember between requests."""
+    rows = [
+        np.random.default_rng([int(seed) & 0xFFFFFFFF, int(t) & 0xFFFFFFFF, 7]).standard_normal(dim)
+        for t in range(int(start), int(start) + int(horizon))
+    ]
+    return torch.tensor(np.stack(rows), dtype=torch.float32)
+
+
+def sample(velocity, obs, horizon, dim, steps, generator=None, noise=None):
     """Plain flow sampling (Eq. 1): the unguided policy, used for the first chunk."""
-    a = torch.randn(horizon, dim, generator=generator)
+    a = torch.randn(horizon, dim, generator=generator) if noise is None else noise.clone()
     with torch.no_grad():
         for k in range(steps):
             a = a + velocity(a, obs, k / steps) / steps
     return a
 
 
-def guided_inference(velocity, obs, a_prev, horizon, delay, exec_horizon, steps, beta, generator=None):
+def guided_inference(velocity, obs, a_prev, horizon, delay, exec_horizon, steps, beta, generator=None, noise=None):
     """GUIDEDINFERENCE of Algorithm 1.
 
     `velocity(a, obs, tau)` maps a (H, M) chunk to its (H, M) velocity and must be
@@ -71,7 +84,7 @@ def guided_inference(velocity, obs, a_prev, horizon, delay, exec_horizon, steps,
     y = torch.zeros(horizon, dim)
     length = min(a_prev.shape[0], horizon)
     y[:length] = a_prev[:length]
-    a = torch.randn(horizon, dim, generator=generator)
+    a = torch.randn(horizon, dim, generator=generator) if noise is None else noise.clone()
     for k in range(steps):
         tau = k / steps
         a = a.detach().requires_grad_(True)
@@ -151,3 +164,97 @@ class Chunker:
             self.chunks.popitem(last=False)
         self.pending = obs_seq
         self.pending_since = stamp_seq
+
+
+def roll_forward(obs, a_prev, delay):
+    """The state the arm is expected to be in when the new chunk starts, `delay` steps after
+    `obs`: the measured state plus the motion the executing chunk is about to make. `a_prev[0]`
+    is the action of the observation's own step; the state at `obs` reflects the action before
+    it, which is extrapolated. Exact when the arm follows a straight ramp."""
+    if a_prev is None or delay < 1:
+        return obs
+    last = min(int(delay), a_prev.shape[0]) - 1
+    base = 2 * a_prev[0] - a_prev[1] if a_prev.shape[0] > 1 else a_prev[0]
+    return obs + (a_prev[last] - base)
+
+
+def prefix_residual(chunk, y, delay):
+    """Largest distance between the frozen steps of `chunk` and the previous chunk's values `y`,
+    the thing real-time chunking is supposed to make zero. 0 if nothing is frozen."""
+    n = min(int(delay), y.shape[0], chunk.shape[0])
+    if n <= 0:
+        return 0.0
+    return float((chunk[:n] - y[:n]).abs().max())
+
+
+@dataclasses.dataclass
+class PlanConfig:
+    """How a chunk is planned from a request."""
+
+    use_rtc: bool = True
+    horizon: int = 50
+    steps: int = 5
+    beta: float = 5.0
+    roll_obs: bool = False  # plan from the state after the frozen prefix; prepend the prefix
+    positional_noise: bool = False  # noise indexed by absolute step, shared by overlapping chunks
+    noise_seed: int = 0
+    best_of: int = 1  # guided samples drawn; the one with the smallest prefix residual wins
+    project: bool = False  # force the frozen steps to the previous chunk's values exactly
+    health_tol: float = 0.05  # prefix residual above which the sample is reported unhealthy
+
+
+@dataclasses.dataclass
+class PlanInfo:
+    guided: bool = False
+    residual: float = 0.0  # frozen prefix residual of the returned chunk
+    score: float = 0.0  # weighted prefix residual norm of the chosen sample
+    tries: int = 1
+    healthy: bool = True
+
+
+def plan_chunk(velocity, obs, a_prev, delay, executed, obs_seq, cfg, generator=None):
+    """One chunk for one request: the single code path the policy server and the simulator share.
+
+    `a_prev` is the previous chunk's unplayed remainder (its first step belongs to the control
+    step `obs_seq`), or None when nothing is executing. Returns `(chunk, PlanInfo)`."""
+    h = cfg.horizon
+    dim = obs.shape[0]
+    info = PlanInfo()
+    if not cfg.use_rtc or a_prev is None:
+        noise = positional_noise(cfg.noise_seed, obs_seq, h, dim) if cfg.positional_noise else None
+        return sample(velocity, obs, h, dim, cfg.steps, generator, noise), info
+    info.guided = True
+    prefix = None
+    obs_in, y, d_eff, s_eff, start = obs, a_prev, delay, executed, obs_seq
+    if cfg.roll_obs and delay >= 1 and a_prev.shape[0] > delay:
+        # The policy plans from where the arm will be when its first action runs, `delay` steps
+        # on; the steps in between are the executing chunk's, kept as they are.
+        prefix = a_prev[:delay]
+        obs_in = roll_forward(obs, a_prev, delay)
+        y, d_eff, s_eff, start = a_prev[delay:], 0, executed + delay, obs_seq + delay
+    w = prefix_weights(h, d_eff, s_eff).unsqueeze(1)
+    y_pad = torch.zeros(h, dim)
+    y_pad[: min(y.shape[0], h)] = y[:h]
+    best, best_score, tries = None, None, max(1, cfg.best_of)
+    for i in range(tries):
+        if i == 0 and cfg.positional_noise:
+            noise = positional_noise(cfg.noise_seed, start, h, dim)
+        else:
+            noise = None
+        a = guided_inference(velocity, obs_in, y, h, d_eff, s_eff, cfg.steps, cfg.beta, generator, noise)
+        score = float(torch.linalg.norm(w * (y_pad - a)))
+        if best is None or score < best_score:
+            best, best_score = a, score
+    chunk = best
+    if cfg.project and d_eff > 0:
+        n = min(d_eff, y.shape[0])
+        chunk = chunk.clone()
+        chunk[:n] = y[:n]
+    if prefix is not None:
+        chunk = torch.cat([prefix, chunk[: h - prefix.shape[0]]], dim=0)
+        info.residual = 0.0  # the frozen steps are the previous chunk's by construction
+    else:
+        info.residual = prefix_residual(chunk, y, d_eff)
+    info.score, info.tries = best_score, tries
+    info.healthy = info.residual <= cfg.health_tol
+    return chunk, info

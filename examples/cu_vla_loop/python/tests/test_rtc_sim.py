@@ -9,11 +9,6 @@ from vla_runner import rtc, rtc_sim
 torch.set_num_threads(2)
 
 
-@pytest.fixture(scope="module")
-def policy():
-    return fp.FlowPolicy(fp.train(3000))
-
-
 def detour(chunk, t0):
     """Joint 0's offset from the straight path (no detour) for a chunk that starts at demo step
     `t0`: positive on one side of the obstacle, negative on the other."""

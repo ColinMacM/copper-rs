@@ -29,6 +29,8 @@ camera -> link/img ~~Zenoh~~> vla_runner          link/status -> status_probe (l
 Little-endian, fixed-width integers, payload only:
 
 - observation: `seq: u64`, `tov_ns: u64`, `len: u32`, `len` x `f32`
+- exec state (`vla/exec`, every cycle): `stamp_seq: u64`, `chunk_seq: u64`, `next_index: u32`, `flags: u32`, `accept_skip: u32`, `reject: u32`, `tracking_err: f32`
+- inference request (`vla/infer`, when the scheduler fires): `obs_seq: u64`, `delay: u32`, `executed: u32`, `reason: u32`, `state_len: u32`, `state_len` x `f32`, `previous_len: u32`, `previous_len` x `f32`
 - image: `seq: u64`, `tov_ns: u64`, `width`, `height`, `stride: u32`, `pixel_format: [u8; 4]`, `len: u32`, `len` x `u8`
 - action chunk: `obs_seq: u64`, `len: u32`, `len` x `f32` (row-major, 6 values per step, at most 300)
 
@@ -63,9 +65,30 @@ bookkeeping of Algorithm 1 (`Chunker`: delay buffer, execution horizon, when to 
 inference). While a chunk executes, the next one is generated with its first `d` actions frozen
 to the executing chunk's unplayed actions and the rest inpainted to agree with them.
 
-The governor reports what it executes every cycle as an `ExecState` on `vla/exec`: which chunk
-is active and which step plays next. The runner reads the previous chunk's unplayed remainder
-and the delay each chunk really had from that, so neither is counted or assumed.
+The scheduler of Algorithm 1 runs in the governor (`SchedParams`), which already holds the
+active chunk, the step it is on and the observation history. On the cycles where the next
+inference should start it emits an `InferenceRequest` on `vla/infer`: the observation, the delay
+estimate `d`, the number of steps `s` already played, and the unplayed remainder of the active
+chunk (up to 50 x 6 floats, about 1.2 KB). The policy server therefore keeps no state: it
+answers requests. Because the request is a CopperList output, a replay re-fires it at the same
+cycles with the same contents (`tests/replay.rs` compares all of them bit for bit).
+
+Governor keys, all optional; `sched_s_min` of 0 or absent turns the scheduler off:
+
+| Key | Meaning |
+| --- | --- |
+| `sched_s_min` | Steps of a chunk to play before the next inference starts (`s_min`). |
+| `sched_margin` | The horizon is at least the delay estimate plus this, so an answer is not due before the steps it replaces have played. |
+| `sched_d_init` | Delay assumed until one has been measured, in cycles. |
+| `sched_horizon` | Prediction horizon `H`; the horizon never exceeds `H - d`. |
+| `replan_threshold` | Tracking error, in goal units, above which the plan is replaced at once, whatever `s_min` says; 0 disables. |
+| `sched_pending_timeout` | Cycles after which an unanswered request is dropped and asked again. |
+
+The delay estimate is the largest of the last ten delays the governor measured: when it accepts a
+chunk it knows the step the chunk starts at (`ExecState.accept_skip`), which is the delay that
+chunk really had. `ExecState` also says why a chunk was refused (`reject`) and how far the
+measurement is from the target played last cycle (`tracking_err`), the signal behind
+`replan_threshold`.
 
 ```bash
 python -m vla_runner --policy flow --checkpoint flow.pt --connect-port P --rtc on   # RTC
@@ -76,12 +99,37 @@ python -m vla_runner.flow_policy --out flow.pt                                  
 `--rtc off` keeps the same asynchronous schedule and samples each chunk freely, the paper's
 naive baseline. The governor's `hold_deadline_ms` must exceed the time a chunk plays before the
 next is computed (`s_min` steps); the example's default of 500 ms is for one chunk per
-observation, and `run_configured` overrides it.
+observation, and `run_configured` overrides it. `tests/rtc.rs` turns the scheduler on through
+the same override.
 
 The demo policy (`flow_policy.py`) is a small flow-matching network trained on synthetic
 demonstrations that fork: the same path, then a detour to the left or right. It learns the first
 12 DCT coefficients of each joint; the exact velocity of the remaining high frequencies is added
 analytically. It stands in for a VLA, which this repository does not contain.
+
+### Options added on top of the paper
+
+Each is measured in `rtc_sim.ablate` (40 seeded episodes, 200 hand-overs per row, delay of 8
+cycles, jumps and accelerations in ticks, policy units times 600) and tested. They can be combined.
+
+| Option | Where | What it does | Mean jump / max jump / accel |
+| --- | --- | --- | --- |
+| (naive async) | | sample freely, replace the old chunk | 78 / 349 / 150 |
+| RTC | `rtc.guided_inference` | the paper | 45 / 189 / 89 |
+| positional noise | `--positional-noise` | the noise of step `t` is a fixed function of `(seed, t)`, so chunks that overlap start their overlapping steps from the same noise; nothing to remember | RTC + it: 36 / 108 / 75; naive + it: 57 / 237 / 115 |
+| roll the observation forward | `--roll-obs` | plan from the state expected after the frozen steps, then put those steps in front | 37 / 83 / 73 |
+| best of K | `--best-of K` | draw K guided samples, keep the one with the smallest weighted prefix residual | K = 4: 37 / 110 / 75 |
+| exact projection | `--project` | set the frozen steps to the previous chunk's values; a guarantee, not a speed-up: the steps it fixes are the ones the governor skips when the delay estimate covers the true delay, so what is played is unchanged | 45 / 189 / 89 |
+| governor blend | `blend_steps` | the played target moves from the old chunk's step to the new chunk's over that many steps | 4 steps: 17 / 46 / 66 |
+
+The blend lowers the jump by construction, since it smooths the executed target, so it is also
+checked by acceleration (lower) and by the distance from the target at the end of the episode
+(not worse). Combining everything was not better than the blend alone on these metrics.
+
+Health check: after guidance the frozen steps differ from the previous chunk's by some amount.
+`PlanInfo.residual` reports it and `healthy` compares it with `--health-tol` (0.05 policy units,
+30 ticks). Plain guidance at 5 denoising steps is unhealthy for 83 to 98% of chunks by that
+tolerance; projection makes it zero. The runner counts them (`unhealthy`, `max_residual`).
 
 What the tests establish:
 
@@ -89,11 +137,18 @@ What the tests establish:
   the paper's Fig. 7), the autodiff term equals a finite-difference Jacobian product, and on a
   Gaussian flow with a closed-form solution the guided sample matches the frozen prefix and
   follows the exact conditional mean.
+- `tests/test_rtc_extras.py`: positional noise is shared by overlapping chunks, the roll-forward
+  is exact on a ramp, projection leaves the frozen steps bit-identical, best-of-K returns the
+  smallest residual of its draws, the health check flags and projection cures; and the ablation
+  rows above are asserted with margin.
 - `tests/test_rtc_sim.py`: over 40 simulated episodes per setting the hand-over jump is smaller
   with RTC than with the naive baseline, and the gap grows with the delay; with the guidance
   weight at zero RTC equals the baseline exactly.
 - `tests/rtc.rs`: the Copper loop, a Python process and the trained policy run RTC end to end:
-  guided chunks flow, the delay is measured from `ExecState`, goals stay inside the governor's limits.
+  guided chunks flow, the governor measures the delay, goals stay inside the governor's limits.
+- the governor's unit tests (scheduler horizon, delay window, pending and timeout, event trigger,
+  keyframe round trip), its allocation test (no heap use with requests being emitted) and
+  `tests/replay.rs` (requests reproduced bit for bit in a replay without a network session).
 
 In a first 12-episode measurement the mean hand-over jump was 44 ticks with RTC against 74
 naive at a delay of 8 cycles, and 50 against 93 at 12 (`rtc_sim.compare` reproduces it). In the

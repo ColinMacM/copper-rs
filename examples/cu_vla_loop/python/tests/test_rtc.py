@@ -216,10 +216,23 @@ def test_chunker_has_nothing_to_stay_consistent_with_after_the_chunk_ends():
 
 
 def test_exec_state_wire_layout():
-    data = wire.encode_exec(2**40 + 3, 9, 25, wire.HAS_STAMP | wire.PLAYED)
-    assert len(data) == 24
+    data = wire.encode_exec(2**40 + 3, 9, 25, wire.HAS_STAMP | wire.PLAYED | wire.ACCEPTED, 7, 5, 12.5)
+    assert len(data) == 36
     e = wire.decode_exec(data)
     assert (e.stamp_seq, e.chunk_seq, e.next_index) == (2**40 + 3, 9, 25)
-    assert e.has_stamp and e.played and not e.chunk_active
+    assert (e.accept_skip, e.reject, e.tracking_err) == (7, 5, 12.5)
+    assert e.has_stamp and e.played and e.accepted and not e.chunk_active
     with pytest.raises(ValueError):
         wire.decode_exec(data[:-1])
+
+
+def test_inference_request_wire_layout_and_rejections():
+    data = wire.encode_request(2**40 + 9, 5, 25, wire.REASON_SCHEDULED, [1.0, 2.0, 3.0], [0.5] * 12)
+    r = wire.decode_request(data)
+    assert (r.obs_seq, r.delay, r.executed, r.reason) == (2**40 + 9, 5, 25, wire.REASON_SCHEDULED)
+    assert r.state == [1.0, 2.0, 3.0] and r.previous == [0.5] * 12
+    empty = wire.decode_request(wire.encode_request(1, 3, 0, wire.REASON_FIRST, [0.0] * 6, []))
+    assert empty.previous == []
+    for bad in (b"", data[:-1], data + b"\x00", data[:30]):
+        with pytest.raises(ValueError):
+            wire.decode_request(bad)

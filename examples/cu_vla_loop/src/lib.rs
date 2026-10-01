@@ -10,7 +10,7 @@ use cu29::prelude::*;
 use std::sync::{Arc, Mutex};
 
 pub use cu_action_governor::JointPositions;
-use cu_action_governor::{ExecState, ObsPacket, ObsStamp};
+use cu_action_governor::{ExecState, InferenceRequest, ObsPacket, ObsStamp};
 pub use cu_policy_link::LinkStatus;
 
 /// Every goal the mock arm received and every position it reported, one entry per cycle.
@@ -87,6 +87,7 @@ pub mod bridges {
             obs => ObsPacket = "vla/obs",
             img => CuImage<Vec<u8>> = "vla/img",
             exec => ExecState = "vla/exec",
+            infer => InferenceRequest = "vla/infer",
         }
     }
     rx_channels! {

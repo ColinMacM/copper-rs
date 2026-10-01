@@ -32,7 +32,7 @@ pub use worker::{IMAGE_HEADER_BYTES, LinkStats};
 use worker::{ImgSlot, RxMailbox, SessionSettings, Shared, TxSlot, WorkerChannels};
 
 /// Largest encoded message on a Tx channel.
-pub const TX_SLOT_BYTES: usize = 256;
+pub const TX_SLOT_BYTES: usize = 1536;
 /// Largest encoded sample accepted on an Rx channel.
 pub const RX_SLOT_BYTES: usize = 2048;
 /// Messages the Tx ring holds before it starts dropping.

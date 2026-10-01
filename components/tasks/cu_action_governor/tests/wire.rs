@@ -1,7 +1,9 @@
 //! The byte layout the Python runner relies on, checked from the Rust side.
 //! ObsPacket: seq u64 | tov_ns u64 | len u32 | len x f32. ActionChunk: obs_seq u64 | len u32 | len x f32, little-endian, fixed-width integers.
 
-use cu_action_governor::{ActionChunk, CHUNK_LEN, ExecState, OBS_JOINTS, ObsPacket};
+use cu_action_governor::{
+    ActionChunk, CHUNK_LEN, ExecState, InferenceRequest, OBS_JOINTS, ObsPacket,
+};
 use cu29::bincode::{config, decode_from_slice, encode_into_slice};
 use cu29::prelude::CuArray;
 
@@ -50,17 +52,66 @@ fn an_exec_state_encodes_to_the_documented_bytes() {
         chunk_seq: 9,
         next_index: 25,
         flags: ExecState::HAS_STAMP | ExecState::PLAYED,
+        accept_skip: 7,
+        reject: ExecState::REJECT_STALE,
+        tracking_err: 12.5,
     };
-    let mut buf = [0u8; 32];
+    let mut buf = [0u8; 48];
     let n = encode_into_slice(e, &mut buf, cfg()).unwrap();
     let mut expected = Vec::new();
     expected.extend_from_slice(&((1u64 << 40) + 3).to_le_bytes());
     expected.extend_from_slice(&9u64.to_le_bytes());
     expected.extend_from_slice(&25u32.to_le_bytes());
     expected.extend_from_slice(&5u32.to_le_bytes());
+    expected.extend_from_slice(&7u32.to_le_bytes());
+    expected.extend_from_slice(&5u32.to_le_bytes());
+    expected.extend_from_slice(&12.5f32.to_le_bytes());
     assert_eq!(&buf[..n], expected.as_slice());
     let (back, _): (ExecState, usize) = decode_from_slice(&buf[..n], cfg()).unwrap();
     assert_eq!(back, e);
+}
+
+#[test]
+fn an_inference_request_encodes_to_the_documented_bytes_and_roundtrips() {
+    let mut state = CuArray::new();
+    state.fill_from_iter([1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0]);
+    let mut previous = CuArray::new();
+    previous.fill_from_iter((0..12).map(|i| i as f32 * 0.5));
+    let r = InferenceRequest {
+        obs_seq: (1 << 40) + 9,
+        delay: 5,
+        executed: 25,
+        reason: InferenceRequest::REASON_SCHEDULED,
+        state,
+        previous,
+    };
+    let mut buf = [0u8; 2048];
+    let n = encode_into_slice(r.clone(), &mut buf, cfg()).unwrap();
+    let mut expected = Vec::new();
+    expected.extend_from_slice(&((1u64 << 40) + 9).to_le_bytes());
+    for v in [5u32, 25, 2, 6] {
+        expected.extend_from_slice(&v.to_le_bytes());
+    }
+    for v in [1.0f32, 2.0, 3.0, 4.0, 5.0, 6.0] {
+        expected.extend_from_slice(&v.to_le_bytes());
+    }
+    expected.extend_from_slice(&12u32.to_le_bytes());
+    for i in 0..12 {
+        expected.extend_from_slice(&(i as f32 * 0.5).to_le_bytes());
+    }
+    assert_eq!(&buf[..n], expected.as_slice());
+    let (back, _): (InferenceRequest, usize) = decode_from_slice(&buf[..n], cfg()).unwrap();
+    assert_eq!(
+        (back.obs_seq, back.delay, back.executed, back.reason),
+        (r.obs_seq, 5, 25, 2)
+    );
+    assert_eq!(back.previous.as_slice(), r.previous.as_slice());
+    // The largest request, a full chunk behind a full state, must fit the link's slot.
+    let mut full = InferenceRequest::default();
+    full.state.fill_from_iter([0.0f32; 8]);
+    full.previous.fill_from_iter([0.0f32; 300]);
+    let n = encode_into_slice(full, &mut buf, cfg()).unwrap();
+    assert!(n <= 1536, "{n} bytes");
 }
 
 #[test]

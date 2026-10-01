@@ -13,6 +13,7 @@ OBS_KEY = "vla/obs"
 ACTION_KEY = "vla/action"
 IMAGE_KEY = "vla/img"
 EXEC_KEY = "vla/exec"
+REQUEST_KEY = "vla/infer"
 
 
 def session(connect_port=None, listen_port=None):
@@ -36,9 +37,12 @@ class ExecMetrics:
         self.sum_jump = 0.0
         self.max_accel = 0.0
         self.played = 0
+        self.max_delay = 0
 
     def update(self, exec_state, chunk_ticks):
         """`chunk_ticks`: the (H, M) ticks of the active chunk, or None if unknown."""
+        if exec_state.accepted:
+            self.max_delay = max(self.max_delay, exec_state.accept_skip)
         if not exec_state.played or chunk_ticks is None or exec_state.next_index >= len(chunk_ticks):
             return
         target = chunk_ticks[exec_state.next_index]
@@ -56,17 +60,20 @@ class ExecMetrics:
     def report(self):
         return {"switches": self.switches, "max_jump": round(self.max_jump, 1),
                 "mean_jump": round(self.sum_jump / max(self.switches, 1), 1),
-                "max_accel": round(self.max_accel, 1), "played": self.played}
+                "max_accel": round(self.max_accel, 1), "played": self.played, "max_delay": self.max_delay}
 
 
-def serve_flow(policy, connect_port, seconds, *, use_rtc, horizon, dim, s_min, d_init, beta=5.0,
-               denoise_steps=5, delay_s=0.0, kill_after=None, log=None, seed=0):
-    """Serve a flow-matching policy with the asynchronous schedule of paper Algorithm 1.
+def serve_flow(policy, connect_port, seconds, *, cfg, delay_s=0.0, kill_after=None, log=None, seed=0):
+    """Answer the governor's inference requests with a flow-matching policy.
 
-    Inference starts when the governor reports that `s_min` steps of the executing chunk have
-    played and no answer is in flight. With `use_rtc` the new chunk is inpainted against the
-    unplayed remainder of the executing one (real-time chunking); without it the chunk is
-    sampled freely and simply replaces the old one, the naive asynchronous baseline.
+    The server keeps no schedule. The scheduler in the governor decides when to ask and sends
+    everything real-time chunking needs: the observation, the delay estimate `d`, the number of
+    steps `s` of the executing chunk already played, and that chunk's unplayed remainder. With
+    `cfg.use_rtc` the new chunk is inpainted against the remainder (paper Algorithm 1,
+    GUIDEDINFERENCE); without it the chunk is sampled freely and replaces the old one, the
+    naive asynchronous baseline. `rtc.plan_chunk` holds the rest of the options (rolling the
+    observation forward, noise indexed by absolute step, best-of-K, exact prefix projection,
+    the health check). A newer request replaces an unanswered older one.
     """
     import numpy as np
     import torch
@@ -77,23 +84,23 @@ def serve_flow(policy, connect_port, seconds, *, use_rtc, horizon, dim, s_min, d
     torch.manual_seed(seed)
     sess = session(connect_port=connect_port)
     pub = sess.declare_publisher(ACTION_KEY)
-    chunker = rtc.Chunker(horizon, dim, s_min, d_init)
     metrics = ExecMetrics()
     lock = threading.Lock()
     wake = threading.Event()
-    obs_by_seq = {}
-    latest = {"exec": None}
-    stats = {"chunks": 0, "guided": 0, "infer_ms": []}
+    sent_ticks = {}  # only for the metrics below; no decision reads it
+    latest = {"request": None}
+    stats = {"chunks": 0, "guided": 0, "events": 0, "unhealthy": 0, "bad_requests": 0, "infer_ms": [], "max_residual": 0.0}
 
-    def on_obs(sample):
+    def on_request(sample):
         try:
-            seq, _tov, state = wire.decode_obs(bytes(sample.payload))
+            request = wire.decode_request(bytes(sample.payload))
         except ValueError:
+            with lock:
+                stats["bad_requests"] += 1
             return
         with lock:
-            obs_by_seq[seq] = state
-            for old in [k for k in obs_by_seq if k < seq - 64]:
-                del obs_by_seq[old]
+            latest["request"] = request
+        wake.set()
 
     def on_exec(sample):
         try:
@@ -101,13 +108,9 @@ def serve_flow(policy, connect_port, seconds, *, use_rtc, horizon, dim, s_min, d
         except ValueError:
             return
         with lock:
-            chunker.observe(e)
-            chunk = chunker.chunks.get(e.chunk_seq)
-            metrics.update(e, None if chunk is None else flow_policy.to_ticks(chunk).numpy())
-            latest["exec"] = e
-        wake.set()
+            metrics.update(e, sent_ticks.get(e.chunk_seq))
 
-    sess.declare_subscriber(OBS_KEY, on_obs)
+    sess.declare_subscriber(REQUEST_KEY, on_request)
     sess.declare_subscriber(EXEC_KEY, on_exec)
     end = time.monotonic() + seconds
     killed_at = time.monotonic() + kill_after if kill_after else None
@@ -116,33 +119,40 @@ def serve_flow(policy, connect_port, seconds, *, use_rtc, horizon, dim, s_min, d
         if log and time.monotonic() >= next_report:
             next_report += 1.0
             with lock:
-                line = dict(chunks=stats["chunks"], guided=stats["guided"], delay=chunker.delay(), **metrics.report())
+                line = dict(chunks=stats["chunks"], guided=stats["guided"], events=stats["events"],
+                            unhealthy=stats["unhealthy"], max_residual=round(stats["max_residual"] * flow_policy.SCALE, 1),
+                            **metrics.report())
             print(json.dumps(line), file=log, flush=True)
         if killed_at and time.monotonic() >= killed_at:
             os._exit(0)
         wake.wait(0.05)
         wake.clear()
         with lock:
-            e = latest["exec"]
-            if e is None or not e.has_stamp or not chunker.ready(e) or e.stamp_seq not in obs_by_seq:
-                continue
-            state = obs_by_seq[e.stamp_seq]
-            a_prev, delay, s_played = chunker.plan(e)
-            obs_seq = e.stamp_seq
-        obs = torch.tensor(flow_policy.from_ticks(np.asarray(state[:dim], dtype=np.float32)))
+            request, latest["request"] = latest["request"], None
+        if request is None:
+            continue
+        obs = torch.tensor(flow_policy.from_ticks(np.asarray(request.state[:flow_policy.DIM], dtype=np.float32)))
         t0 = time.monotonic()
-        if use_rtc and a_prev is not None:
-            chunk = rtc.guided_inference(policy.velocity, obs, a_prev, horizon, delay, s_played, denoise_steps, beta)
-            stats["guided"] += 1
-        else:
-            chunk = rtc.sample(policy.velocity, obs, horizon, dim, denoise_steps)
+        a_prev = None
+        if request.previous:
+            a_prev = torch.tensor(
+                flow_policy.from_ticks(np.asarray(request.previous, dtype=np.float32).reshape(-1, flow_policy.DIM))
+            )
+        chunk, info = rtc.plan_chunk(policy.velocity, obs, a_prev, request.delay, request.executed, request.obs_seq, cfg)
+        stats["guided"] += info.guided
+        stats["unhealthy"] += info.guided and not info.healthy
+        stats["max_residual"] = max(stats["max_residual"], info.residual)
+        stats["events"] += bool(request.reason & wire.REASON_EVENT)
         stats["infer_ms"].append((time.monotonic() - t0) * 1000)
         if delay_s:
             time.sleep(delay_s)
-        pub.put(wire.encode_chunk(obs_seq, flow_policy.to_ticks(chunk).flatten().tolist()))
-        stats["chunks"] += 1
+        ticks = flow_policy.to_ticks(chunk).detach().numpy()
         with lock:
-            chunker.sent(obs_seq, chunk.detach(), obs_seq)
+            sent_ticks[request.obs_seq] = ticks
+            for old in [k for k in sent_ticks if k < request.obs_seq - 400]:
+                del sent_ticks[old]
+        pub.put(wire.encode_chunk(request.obs_seq, ticks.flatten().tolist()))
+        stats["chunks"] += 1
     sess.close()
     stats["metrics"] = metrics.report()
     return stats
@@ -235,9 +245,12 @@ def main(argv=None):
     p.add_argument("--policy", choices=["scripted", "act", "flow"], default="scripted")
     p.add_argument("--checkpoint", help="flow: trained checkpoint from vla_runner.flow_policy")
     p.add_argument("--rtc", choices=["on", "off"], default="on", help="flow: real-time chunking, or the naive asynchronous baseline")
-    p.add_argument("--s-min", type=int, default=25, help="flow: minimum execution horizon")
-    p.add_argument("--d-init", type=int, default=3, help="flow: initial inference delay estimate, in cycles")
     p.add_argument("--beta", type=float, default=5.0, help="flow: guidance weight clip")
+    p.add_argument("--roll-obs", action="store_true", help="flow: plan from the state after the frozen prefix")
+    p.add_argument("--positional-noise", action="store_true", help="flow: noise indexed by absolute step")
+    p.add_argument("--best-of", type=int, default=1, help="flow: guided samples per chunk, best prefix residual wins")
+    p.add_argument("--project", action="store_true", help="flow: force the frozen steps to the previous chunk exactly")
+    p.add_argument("--health-tol", type=float, default=0.05, help="flow: prefix residual (policy units) above which a chunk is unhealthy")
     p.add_argument("--denoise-steps", type=int, default=5)
     p.add_argument("--seed", type=int, default=0, help="flow: noise seed")
     p.add_argument("--calibration", help="act: LeRobot calibration JSON (joint names shoulder_pan .. gripper)")
@@ -251,10 +264,16 @@ def main(argv=None):
     if a.policy == "flow":
         from . import flow_policy
 
+        from . import rtc
+
+        cfg = rtc.PlanConfig(
+            use_rtc=a.rtc == "on", horizon=flow_policy.HORIZON, steps=a.denoise_steps, beta=a.beta,
+            roll_obs=a.roll_obs, positional_noise=a.positional_noise, noise_seed=a.seed,
+            best_of=a.best_of, project=a.project, health_tol=a.health_tol,
+        )
         stats = serve_flow(
-            flow_policy.load(a.checkpoint), a.connect_port, a.seconds, use_rtc=a.rtc == "on",
-            horizon=flow_policy.HORIZON, dim=flow_policy.DIM, s_min=a.s_min, d_init=a.d_init,
-            beta=a.beta, denoise_steps=a.denoise_steps, delay_s=a.delay_s, kill_after=a.kill_after, log=sys.stdout, seed=a.seed,
+            flow_policy.load(a.checkpoint), a.connect_port, a.seconds, cfg=cfg,
+            delay_s=a.delay_s, kill_after=a.kill_after, log=sys.stdout, seed=a.seed,
         )
         stats["infer_ms"] = len(stats["infer_ms"])
         print(json.dumps(stats), flush=True)

@@ -9,7 +9,10 @@ pub mod payloads;
 #[cfg(feature = "testkit")]
 pub mod testkit;
 
-pub use governor::{ActionGovernor, GovernorCore, GovernorParams, JointPositions, Status};
+pub use governor::{
+    ActionGovernor, GovernorCore, GovernorParams, JointPositions, SchedParams, Status,
+};
 pub use payloads::{
-    ActionChunk, CHUNK_LEN, ExecState, JOINTS, MAX_STEPS, OBS_JOINTS, ObsPacket, ObsStamp,
+    ActionChunk, CHUNK_LEN, ExecState, InferenceRequest, JOINTS, MAX_STEPS, OBS_JOINTS, ObsPacket,
+    ObsStamp,
 };

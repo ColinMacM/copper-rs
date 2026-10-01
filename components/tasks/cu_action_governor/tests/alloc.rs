@@ -2,8 +2,8 @@
 //! around the measured region) around (1) the governor task's `process()` called directly
 //! with adversarial inputs and (2) whole `run_one_iteration`s of the graph with and
 //! without the governor.
-use cu_action_governor::governor::{ActionGovernor, GovernorParams, JointPositions};
-use cu_action_governor::{ActionChunk, ExecState, JOINTS, MAX_STEPS, ObsStamp};
+use cu_action_governor::governor::{ActionGovernor, GovernorParams, JointPositions, SchedParams};
+use cu_action_governor::{ActionChunk, ExecState, InferenceRequest, JOINTS, MAX_STEPS, ObsStamp};
 use cu29::prelude::*;
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
@@ -62,6 +62,17 @@ fn params() -> GovernorParams {
         hold_deadline_ns: 300_000_000,
         cycle_ns: 10_000_000,
         time_from_feedback: true,
+        // The scheduler is on, with an event threshold the test's feedback crosses, so the
+        // request path (including copying the unplayed remainder) is part of what is counted.
+        sched: SchedParams {
+            s_min: 4,
+            margin: 2,
+            d_init: 2,
+            horizon: 50,
+            replan_threshold: 0.05,
+            pending_timeout: 25,
+            blend_steps: 3,
+        },
     }
 }
 
@@ -72,6 +83,7 @@ fn process_allocates_nothing_on_every_path() {
     let mut out = (
         CuMsg::<JointPositions>::default(),
         CuMsg::<ExecState>::default(),
+        CuMsg::<InferenceRequest>::default(),
     );
     let mut fb = CuMsg::<JointPositions>::default();
     let mut chunk = CuMsg::<ActionChunk>::default();
@@ -80,6 +92,8 @@ fn process_allocates_nothing_on_every_path() {
     good.values
         .fill_from_iter((0..MAX_STEPS * JOINTS).map(|i| 0.001 * i as f32));
 
+    let requests = Cell::new(0u32);
+    let events = Cell::new(0u32);
     let mut run = |cycle: u64| {
         let now = 1_000_000_000 + cycle * 10_000_000;
         let mut a = JointPositions::new();
@@ -137,6 +151,12 @@ fn process_allocates_nothing_on_every_path() {
             _ => chunk.clear_payload(),
         }
         gov.process(&ctx, &(&chunk, &fb, &stamp), &mut out).unwrap();
+        if let Some(r) = out.2.payload() {
+            requests.set(requests.get() + 1);
+            if r.reason & InferenceRequest::REASON_EVENT != 0 {
+                events.set(events.get() + 1);
+            }
+        }
     };
     for c in 0..2000 {
         run(c);
@@ -158,7 +178,16 @@ fn process_allocates_nothing_on_every_path() {
         core.held_cycles,
         core.bad_feedback
     );
+    println!(
+        "requests={} of which event-triggered={}",
+        requests.get(),
+        events.get()
+    );
     assert_eq!(allocs, 0);
+    assert!(
+        requests.get() > 100 && events.get() > 0,
+        "the scheduler never fired, so nothing was proven"
+    );
     assert!(core.accepted > 0 && core.rej_shape > 0 && core.rej_nonfinite > 0);
     assert!(core.rej_order + core.rej_unknown_obs > 0);
 }
