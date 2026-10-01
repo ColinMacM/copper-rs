@@ -46,8 +46,8 @@ fn read_outputs(base: &Path) -> Vec<Out> {
     let mut reader = UnifiedLoggerIOReader::new(r, UnifiedLogType::CopperList);
     copperlists_reader::<default::CuStampedDataSet>(&mut reader)
         .map(|cl| {
-            let m = cl.msgs.get_gov_output_0();
-            let request = cl.msgs.get_gov_output_2().payload().map(|r| {
+            let m = cl.msgs.get_vla_gov_output_0();
+            let request = cl.msgs.get_vla_gov_output_2().payload().map(|r| {
                 (
                     r.obs_seq,
                     r.delay,
@@ -154,18 +154,22 @@ fn a_recorded_policy_run_replays_identically_without_a_zenoh_session() {
     let (clock, mock) = RobotClock::mock();
     let mut config = CuConfig::deserialize_ron(&Replay::original_config()).unwrap();
     let graph = config.get_graph_mut(None).unwrap();
-    let gov = graph.get_node_id_by_name("gov").unwrap();
+    let gov = graph.get_node_id_by_name("vla_gov").unwrap();
     for (key, value) in SCHEDULER {
         graph.get_node_mut(gov).unwrap().set_param(key, *value);
     }
-    let link = config.bridges.iter_mut().find(|b| b.id == "link").unwrap();
+    let link = config
+        .bridges
+        .iter_mut()
+        .find(|b| b.id == "vla_link")
+        .unwrap();
     link.config
         .get_or_insert_with(ComponentConfig::default)
         .set("zenoh_config_json", listen_config(probe_port));
     // Replay never touches the network: the link bridge's lifecycle (construction, start, stop)
     // is handled by the simulation, everything else by the runtime.
     let mut default_cb = |s: default::SimStep<'_>| match s {
-        default::SimStep::LinkBridge(
+        default::SimStep::VlaLinkBridge(
             CuBridgeLifecycleState::Start | CuBridgeLifecycleState::Stop,
         ) => SimOverride::ExecutedBySim,
         _ => SimOverride::ExecuteByRuntime,
@@ -200,7 +204,7 @@ fn a_recorded_policy_run_replays_identically_without_a_zenoh_session() {
             mock.set_value(t.as_nanos());
         }
         let mut cb = |s: default::SimStep<'_>| match s {
-            default::SimStep::LinkBridge(CuBridgeLifecycleState::Start) => {
+            default::SimStep::VlaLinkBridge(CuBridgeLifecycleState::Start) => {
                 SimOverride::ExecutedBySim
             }
             other => default::recorded_replay_step(other, &entry),

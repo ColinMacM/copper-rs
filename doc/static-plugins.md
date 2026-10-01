@@ -157,6 +157,14 @@ A plugin's public nodes (`public` in the manifest) accept connections from the
 application. All other nodes of an instance are private to its fragment;
 connecting to one from outside the fragment is reported as an error.
 
+A public node can be a task or a bridge. The application reaches a bridge's channels as
+`<instance>_<bridge>/<channel>`, for example `src: "obs", dst: "vla_link/obs"`.
+
+Copper binds the ports of a node in the order of its connections in the merged configuration,
+and a plugin's connections follow the application's. A task that a plugin provides therefore
+declares the ports that the application connects first and the ports that its own fragment
+connects last, in both its input and its output tuples.
+
 A `plugins` entry in an included file is resolved relative to that file.
 
 ## 5. Pins and provenance

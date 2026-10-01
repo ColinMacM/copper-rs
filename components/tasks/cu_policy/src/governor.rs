@@ -754,7 +754,7 @@ impl Freezable for ActionGovernor {
 
 impl CuTask for ActionGovernor {
     type Resources<'r> = ();
-    type Input<'m> = input_msg!('m, ActionChunk, JointPositions, ObsStamp);
+    type Input<'m> = input_msg!('m, JointPositions, ObsStamp, ActionChunk);
     type Output<'m> = output_msg!(JointPositions, ExecState, InferenceRequest);
 
     fn new(config: Option<&ComponentConfig>, _resources: Self::Resources<'_>) -> CuResult<Self> {
@@ -770,7 +770,7 @@ impl CuTask for ActionGovernor {
         input: &Self::Input<'i>,
         output: &mut Self::Output<'o>,
     ) -> CuResult<()> {
-        let (chunk, feedback, stamp) = *input;
+        let (feedback, stamp, chunk) = *input;
         let now = match feedback.tov {
             Tov::Time(t) if self.core.params.time_from_feedback => t.as_nanos(),
             _ => ctx.now().as_nanos(),

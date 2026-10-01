@@ -11,9 +11,9 @@
     cnx: [
         (src: "leader", dst: "sink", msg: "cu_policy::governor::JointPositions", missions: ["record"]),
         (src: "fb", dst: "__nc__", msg: "cu_policy::governor::JointPositions", missions: ["record"]),
-        (src: "chunk", dst: "gov", msg: "cu_policy::ActionChunk", missions: ["policy"]),
         (src: "fb", dst: "gov", msg: "cu_policy::governor::JointPositions", missions: ["policy"]),
         (src: "stamp", dst: "gov", msg: "cu_policy::ObsStamp", missions: ["policy"]),
+        (src: "chunk", dst: "gov", msg: "cu_policy::ActionChunk", missions: ["policy"]),
         (src: "gov", dst: "sink", msg: "cu_policy::governor::JointPositions", missions: ["policy"]),
         (src: "gov", dst: "__nc__", msg: "cu_policy::ExecState", missions: ["policy"]),
         (src: "gov", dst: "__nc__", msg: "cu_policy::InferenceRequest", missions: ["policy"]),

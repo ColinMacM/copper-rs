@@ -26,11 +26,34 @@ use cu29::bincode::config::{Configuration, Fixint, LittleEndian, NoLimit};
 use cu29::prelude::*;
 use rtrb::{Producer, RingBuffer};
 
+use crate::payloads::{ActionChunk, ExecState, InferenceRequest, ObsPacket};
 pub use crate::wire::IMAGE_HEADER_BYTES;
 pub use status::LinkStatus;
 use status::StatusEmitter;
 pub use worker::LinkStats;
 use worker::{ImgSlot, RxMailbox, SessionSettings, Shared, TxSlot, WorkerChannels};
+
+// What the graph sends to the policy process.
+tx_channels! {
+    pub struct LinkTx : LinkTxId {
+        obs => ObsPacket = "obs",
+        img => CuImage<Vec<u8>> = "img",
+        exec => ExecState = "exec",
+        infer => InferenceRequest = "infer",
+    }
+}
+
+// What the graph receives from the policy process, and the link's own counters.
+rx_channels! {
+    pub struct LinkRx : LinkRxId {
+        action => ActionChunk = "action",
+        status => LinkStatus = "status",
+    }
+}
+
+/// The bridge with the channels above. A channel's `route` in the configuration is its Zenoh key;
+/// the Python package derives the same keys from one `--key-prefix`.
+pub type PolicyLink = PolicyLinkBridge<LinkTx, LinkRx>;
 
 /// Largest encoded message on a Tx channel.
 pub const TX_SLOT_BYTES: usize = 1536;

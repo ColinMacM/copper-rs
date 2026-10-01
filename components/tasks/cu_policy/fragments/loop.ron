@@ -1,0 +1,50 @@
+(
+    tasks: [
+        (
+            id: "{{instance}}_gov",
+            type: "cu_policy::ActionGovernor",
+            config: {
+                "min_0": {{min_0}},
+                "max_0": {{max_0}},
+                "min_1": {{min_1}},
+                "max_1": {{max_1}},
+                "min_2": {{min_2}},
+                "max_2": {{max_2}},
+                "min_3": {{min_3}},
+                "max_3": {{max_3}},
+                "min_4": {{min_4}},
+                "max_4": {{max_4}},
+                "min_5": {{min_5}},
+                "max_5": {{max_5}},
+                "max_step": {{max_step}},
+                "max_lead": {{max_lead}},
+                "cycle_ms": {{cycle_ms}},
+                "max_age_ms": {{max_age_ms}},
+                "hold_deadline_ms": {{hold_deadline_ms}},
+                "sched_horizon": {{horizon}}.0,
+                "sched_s_min": {{s_min}}.0,
+                "sched_d_init": {{d_init}}.0,
+                "blend_steps": {{blend_steps}}.0,
+            },
+        ),
+    ],
+    bridges: [
+        (
+            id: "{{instance}}_link",
+            type: "cu_policy::link::PolicyLink",
+            channels: [
+                Tx(id: "obs", route: "{{instance}}/obs"),
+                Tx(id: "img", route: "{{instance}}/img"),
+                Tx(id: "exec", route: "{{instance}}/exec"),
+                Tx(id: "infer", route: "{{instance}}/infer"),
+                Rx(id: "action", route: "{{instance}}/action"),
+                Rx(id: "status", route: "{{instance}}/link_status"),
+            ],
+        ),
+    ],
+    cnx: [
+        (src: "{{instance}}_link/action", dst: "{{instance}}_gov", msg: "cu_policy::ActionChunk"),
+        (src: "{{instance}}_gov", dst: "{{instance}}_link/exec", msg: "cu_policy::ExecState"),
+        (src: "{{instance}}_gov", dst: "{{instance}}_link/infer", msg: "cu_policy::InferenceRequest"),
+    ],
+)

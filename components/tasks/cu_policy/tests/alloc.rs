@@ -150,7 +150,7 @@ fn process_allocates_nothing_on_every_path() {
             }
             _ => chunk.clear_payload(),
         }
-        gov.process(&ctx, &(&chunk, &fb, &stamp), &mut out).unwrap();
+        gov.process(&ctx, &(&fb, &stamp, &chunk), &mut out).unwrap();
         if let Some(r) = out.2.payload() {
             requests.set(requests.get() + 1);
             if r.reason & InferenceRequest::REASON_EVENT != 0 {

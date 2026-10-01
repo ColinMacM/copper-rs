@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 
 pub use cu_policy::JointPositions;
 pub use cu_policy::link::LinkStatus;
-use cu_policy::{ExecState, InferenceRequest, ObsPacket, ObsStamp};
+use cu_policy::{ObsPacket, ObsStamp};
 
 /// Every goal the mock arm received and every position it reported, one entry per cycle.
 /// Reserved up front so recording does not allocate on the cycle.
@@ -77,27 +77,9 @@ pub fn pattern_offset(seq: u64) -> usize {
 
 pub mod bridges {
     use super::*;
-    use cu_policy::ActionChunk;
 
     tx_channels! { pub struct ArmTx : ArmTxId { goals => JointPositions = "goals" } }
     rx_channels! { pub struct ArmRx : ArmRxId { positions => JointPositions = "positions" } }
-
-    tx_channels! {
-        pub struct LinkTx : LinkTxId {
-            obs => ObsPacket = "vla/obs",
-            img => CuImage<Vec<u8>> = "vla/img",
-            exec => ExecState = "vla/exec",
-            infer => InferenceRequest = "vla/infer",
-        }
-    }
-    rx_channels! {
-        pub struct LinkRx : LinkRxId {
-            action => ActionChunk = "vla/action",
-            status => LinkStatus = "vla/link_status",
-        }
-    }
-
-    pub type PolicyLink = cu_policy::link::PolicyLinkBridge<LinkTx, LinkRx>;
 
     #[derive(Reflect)]
     #[reflect(from_reflect = false)]
@@ -452,7 +434,7 @@ pub fn run_configured(
     let link = config
         .bridges
         .iter_mut()
-        .find(|b| b.id == "link")
+        .find(|b| b.id == "vla_link")
         .ok_or_else(|| CuError::from("link bridge missing from the configuration"))?;
     link.config
         .get_or_insert_with(ComponentConfig::default)
@@ -460,11 +442,11 @@ pub fn run_configured(
     if !governor.is_empty() {
         let graph = config.get_graph_mut(None)?;
         let id = graph
-            .get_node_id_by_name("gov")
-            .ok_or_else(|| CuError::from("gov task missing from the configuration"))?;
+            .get_node_id_by_name("vla_gov")
+            .ok_or_else(|| CuError::from("vla_gov task missing from the configuration"))?;
         let node = graph
             .get_node_mut(id)
-            .ok_or_else(|| CuError::from("gov node missing from the graph"))?;
+            .ok_or_else(|| CuError::from("vla_gov node missing from the graph"))?;
         for (key, value) in governor {
             node.set_param(key, *value);
         }

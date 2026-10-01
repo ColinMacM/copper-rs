@@ -7,9 +7,9 @@
         (id: "sink", type: "cu_policy::testkit::GoalSink",),
     ],
     cnx: [
-        (src: "chunk", dst: "gov", msg: "cu_policy::ActionChunk"),
         (src: "fb", dst: "gov", msg: "cu_policy::governor::JointPositions"),
         (src: "stamp", dst: "gov", msg: "cu_policy::ObsStamp"),
+        (src: "chunk", dst: "gov", msg: "cu_policy::ActionChunk"),
         (src: "gov", dst: "sink", msg: "cu_policy::governor::JointPositions"),
         (src: "gov", dst: "__nc__", msg: "cu_policy::ExecState"),
         (src: "gov", dst: "__nc__", msg: "cu_policy::InferenceRequest"),

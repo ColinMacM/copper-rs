@@ -186,6 +186,7 @@ plugin-check:
 	cargo +stable clippy -p cu29-plugin -p cu-plugin -p cu-demo-smoothing -p cu-plugin-demo --all-targets -- --deny warnings
 	cargo +stable test -p cu29-plugin -p cu-plugin -p cu-plugin-demo
 	cargo +stable test -p cu29-runtime --test plugins
+	cargo +stable test -p cu-policy --test plugin
 
 # Create a plugin directory with a manifest and a fragment: just plugin-new pid_loop [dir]
 plugin-new name dir="plugins":
@@ -215,6 +216,7 @@ plugin-demo:
 vla-loop-check:
 	cargo +stable clippy -p cu-policy --all-features -p cu-vla-loop -p cu-feetech --all-targets -- --deny warnings
 	cargo +stable test -p cu-policy --all-features -p cu-feetech
+	just plugin-validate components/tasks/cu_policy
 	cargo +stable test -p cu-vla-loop -- --test-threads=1
 	cd components/tasks/cu_policy && python3 -m pytest -q
 
