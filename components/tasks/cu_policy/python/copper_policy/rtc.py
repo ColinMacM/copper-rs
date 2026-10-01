@@ -99,7 +99,7 @@ def guided_inference(velocity, obs, a_prev, horizon, delay, exec_horizon, steps,
 
 
 class Chunker:
-    """The bookkeeping of Algorithm 1 that is not the model: which actions of the previous chunk
+    """The bookkeeping of Algorithm 1 outside the model: which actions of the previous chunk
     are still to be played, the delay estimate, and when to start the next inference.
 
     The controller here is the Copper loop. Its governor reports, every cycle, which chunk is

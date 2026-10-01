@@ -14,7 +14,7 @@ pub use cu_policy::link::LinkStatus;
 use cu_policy::{ObsPacket, ObsStamp};
 
 /// Every goal the mock arm received and every position it reported, one entry per cycle.
-/// Reserved up front so recording does not allocate on the cycle.
+/// Reserved up front so recording is allocation-free on the cycle.
 #[derive(Default)]
 pub struct ArmTrace {
     pub goals: Vec<Option<[f32; 8]>>,
@@ -30,8 +30,8 @@ pub static TRACE: Mutex<ArmTrace> = Mutex::new(ArmTrace {
 pub static LAST_STATUS: Mutex<Option<LinkStatus>> = Mutex::new(None);
 
 /// Called with `true` before and `false` after the camera takes a buffer from its pool. Taking
-/// one allocates the `Arc` of the handle inside Copper's pool, a cost of any Copper camera that
-/// the link does not add; the allocation test excludes exactly that call with this hook.
+/// one allocates the `Arc` of the handle inside Copper's pool, a cost of any Copper camera,
+/// outside the link; the allocation test excludes exactly that call with this hook.
 pub static POOL_ACQUIRE_PROBE: std::sync::OnceLock<fn(bool)> = std::sync::OnceLock::new();
 
 /// Round-trip measurement. `ObsBuilder` stamps the Copper-clock time of each observation by

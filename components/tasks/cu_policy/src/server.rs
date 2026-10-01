@@ -61,11 +61,11 @@ where
 /// Why a request could not be answered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AnswerError {
-    /// The request does not decode.
+    /// The request fails to decode.
     Request(WireError),
-    /// The policy returned a length that is not a whole number of steps, or above the capacity.
+    /// The policy returned a length outside whole steps or above the capacity.
     Plan(usize),
-    /// The chunk does not fit the reply buffer.
+    /// The chunk exceeds the reply buffer.
     Reply(WireError),
 }
 

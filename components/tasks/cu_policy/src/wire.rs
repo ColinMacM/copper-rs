@@ -11,8 +11,8 @@
 //! Each message has one definition, a pair of functions generic over [`Sink`] and [`Source`].
 //! [`SliceWriter`] and [`SliceReader`] put it on a byte slice; an adapter for another encoder
 //! (the Copper log's) implements the two traits and gets the same layout without a copy.
-//! The `read_*` functions fill buffers the caller provides, so decoding makes no copy of the
-//! values and never allocates; the owned [`Obs`], [`Chunk`] and [`Request`] and the `decode_*`
+//! The `read_*` functions fill buffers the caller provides, so decoding is stack-only and
+//! copies no values; the owned [`Obs`], [`Chunk`] and [`Request`] and the `decode_*`
 //! functions serve tools and tests. A length field above the capacity is an error, and the
 //! capacity is checked before any value is read.
 
@@ -36,7 +36,7 @@ pub enum WireError {
     Truncated,
     /// A length field exceeds the capacity of the message.
     TooLong { max: usize, found: usize },
-    /// The output slice cannot hold the message.
+    /// The message exceeds the output slice.
     BufferTooSmall,
 }
 

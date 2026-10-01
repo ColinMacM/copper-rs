@@ -24,7 +24,7 @@ IMAGE_HEADER_BYTES = _IMAGE_HEADER.size
 
 
 class WireError(ValueError):
-    """A message that does not decode or encode. `kind` is "truncated", "too_long" or "partial_step"."""
+    """A message that fails to decode or encode. `kind` is "truncated", "too_long" or "partial_step"."""
 
     def __init__(self, kind, message):
         super().__init__(message)
@@ -82,8 +82,8 @@ def decode_chunk(data):
 
 
 def encode_chunk(obs_seq, values):
-    """`values`: flat iterable of floats, a whole number of steps. Sent as given: rejecting
-    non-finite or out-of-range values is the governor's job, not the runner's."""
+    """`values`: flat iterable of floats, a whole number of steps. Sent as given: the governor
+    rejects non-finite and out-of-range values."""
     values = list(values)
     if len(values) % JOINTS:
         raise WireError("partial_step", f"{len(values)} values is not a whole number of {JOINTS}-joint steps")

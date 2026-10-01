@@ -1,5 +1,5 @@
 //! The loop against a real Python policy process over real Zenoh (loopback), driving the
-//! governor and a mock arm. Skipped when `python3` cannot import `zenoh`.
+//! governor and a mock arm. Skipped when `import zenoh` fails in `python3`.
 
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;

@@ -39,7 +39,7 @@
                 "max_lead": 300.0,
                 "cycle_ms": 33.333,
             },
-            pin: "blake3:d82398124d1c58447d0e8858d4577da0fdb10718557b29ebc39a057004cf430a",
+            pin: "blake3:1cab57b07cef3b48da9df3bc30ed0c4e9d8e0aed7d5f0a43e5324c64c9e88307",
         ),
     ],
     logging: (slab_size_mib: 64, section_size_mib: 16, keyframe_interval: 30),

@@ -171,7 +171,7 @@ fn a_recorded_policy_run_replays_identically_without_a_zenoh_session() {
     link.config
         .get_or_insert_with(ComponentConfig::default)
         .set("zenoh_config_json", listen_config(probe_port));
-    // Replay never touches the network: the link bridge's lifecycle (construction, start, stop)
+    // Replay stays off the network: the link bridge's lifecycle (construction, start, stop)
     // is handled by the simulation, everything else by the runtime.
     let mut default_cb = |s: default::SimStep<'_>| match s {
         default::SimStep::VlaLinkBridge(

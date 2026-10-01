@@ -1,4 +1,4 @@
-"""Real-time chunking when the delay is not the constant the estimator started with.
+"""Real-time chunking when the delay differs from the constant the estimator started with.
 
 The policy is a small network trained on synthetic demonstrations and the arm is the simulator's
 stand-in that follows the played targets exactly, so these results show how the schedule

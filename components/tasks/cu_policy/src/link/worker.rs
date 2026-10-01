@@ -21,7 +21,7 @@ pub struct LinkStats {
     pub tx_too_large: u64,
     pub tx_publish_errors: u64,
     pub rx_received: u64,
-    /// A sample replaced another that the cycle never took.
+    /// A sample replaced another that was still waiting in the mailbox.
     pub rx_overwritten: u64,
     pub rx_too_large: u64,
     pub rx_decode_errors: u64,
@@ -84,7 +84,7 @@ impl TxSlot {
 }
 
 /// A camera frame on its way to the worker. The handle keeps the pool buffer alive until the
-/// worker has copied it, so the cycle thread never copies the frame.
+/// worker has copied it, so the frame moves between threads as a handle.
 pub(crate) struct ImgSlot {
     pub(crate) channel: u8,
     pub(crate) seq: u64,

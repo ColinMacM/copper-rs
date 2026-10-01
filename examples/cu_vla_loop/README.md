@@ -2,8 +2,9 @@
 
 A policy-driven arm loop built on `cu-policy`: a Python policy receives joint state and camera
 frames over Zenoh and returns action chunks, the governor gates them, and a simulated arm
-follows. The governor and the link come from the `cu-policy-loop` plugin; the application adds
-the arm, the camera and the probes.
+follows. The governor and the link come from the `rtc_loop` fragment of the `cu-policy-loop` plugin,
+which schedules requests for real-time chunking; the application adds the arm, the camera and the
+probes.
 
 ```text
 arm/positions -> obs -> vla_link/obs ~~Zenoh~~> copper_policy (Python policy)
@@ -24,13 +25,14 @@ camera -> vla_link/img ~~Zenoh~~> copper_policy      vla_link/status -> status_p
 | `tasks::SyntheticCamera` | Hands out pooled frames painted with a pattern the Python side verifies pixel by pixel. |
 | `tasks::StatusProbe`, `tasks::ChunkProbe` | Keep the newest link status and the round trip of each chunk for the tests. |
 
-`run_configured` replaces governor settings at run time, for example to turn the scheduler on.
+`run_configured` replaces governor settings at run time (`Setting::Num` for numbers,
+`Setting::Text` for text such as `rtc_mode`), for example to run the naive baseline.
 
 ## Tests
 
 `just vla-loop-check` runs them. They start a real Python policy over loopback Zenoh and check
 that the arm moves while every goal stays inside the limits; that a chunk with NaN, a wild
-target, a stale chunk or a dead policy never reaches the arm as an unsafe goal; that frames and
+target, a stale chunk or a dead policy leaves every goal inside the limits; that frames and
 link counters arrive; that a recorded run, including the scheduler's requests, replays
 identically with no Zenoh session; that the cycle thread allocates nothing with the link live;
 the observation-to-chunk round trip; and real-time chunking end to end with a trained flow

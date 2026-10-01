@@ -64,7 +64,7 @@ impl<D: Decoder<Context = ()>> Source for DecodeSource<'_, D> {
 }
 
 /// One policy output: `values.len() / JOINTS` steps, row-major. `CuArray` is a
-/// fixed-capacity ArrayVec: `Default` works past 32 elements (plain arrays do not) and
+/// fixed-capacity ArrayVec: `Default` holds for any capacity and
 /// only the used prefix is encoded into the log.
 #[derive(Default, Debug, Clone, Serialize, Deserialize, Reflect)]
 #[reflect(from_reflect = false)]
@@ -75,7 +75,7 @@ pub struct ActionChunk {
 }
 
 /// Emitted with every observation handed to the policy bridge. The governor maps
-/// `seq` to its own clock, so the age of a chunk never depends on the policy's clock.
+/// `seq` to its own clock, so the age of a chunk is measured on the governor's clock.
 #[derive(
     Default, Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Encode, Decode, Reflect,
 )]
@@ -253,7 +253,7 @@ impl Decode<()> for ExecState {
 }
 
 /// The bytes of these messages are defined once, in [`crate::wire`]. Decoding reads into a stack
-/// buffer and never touches the heap, so it is safe on the cycle.
+/// buffer and stays off the heap, so it is safe on the cycle.
 impl Encode for ActionChunk {
     fn encode<E: Encoder>(&self, e: &mut E) -> Result<(), EncodeError> {
         wire::write_chunk(&mut EncodeSink(e), self.obs_seq, self.values.as_slice())

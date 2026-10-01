@@ -1,6 +1,6 @@
 //! The loop against a policy written in Python with `copper_policy.server`: the same requests
-//! and answers as `rust_policy.rs`, from a Python process. Skipped when `python3` cannot import
-//! `zenoh`.
+//! and answers as `rust_policy.rs`, from a Python process. Skipped when `import zenoh`
+//! fails in `python3`.
 
 use std::process::{Command, Stdio};
 use std::sync::Mutex;

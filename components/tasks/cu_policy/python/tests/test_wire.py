@@ -30,7 +30,7 @@ def test_chunk_shape_is_enforced_but_values_are_not_filtered():
         wire.encode_chunk(1, [0.0] * 7)
     with pytest.raises(ValueError):
         wire.encode_chunk(1, [0.0] * 306)
-    # The runner does not hide bad values from the governor.
+    # The runner passes bad values on to the governor.
     _, values = wire.decode_chunk(wire.encode_chunk(1, [float("nan")] * 6))
     assert all(math.isnan(v) for v in values)
 

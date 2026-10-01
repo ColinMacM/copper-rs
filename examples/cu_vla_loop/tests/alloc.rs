@@ -71,7 +71,7 @@ fn the_cycle_thread_allocates_nothing_with_the_link_live() {
     );
     drop(probe);
     // Copper's pool allocates the handle's Arc on every `acquire`; that is the camera's cost,
-    // not the link's, so counting is paused across exactly that call.
+    // outside the link, so counting is paused across exactly that call.
     let _ = cu_vla_loop::POOL_ACQUIRE_PROBE.set(|enter| {
         thread_local!(static WAS_ON: Cell<bool> = const { Cell::new(false) });
         if enter {

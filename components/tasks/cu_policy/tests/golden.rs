@@ -173,7 +173,7 @@ fn every_rejected_input_fails_with_its_error() {
 
 #[test]
 fn a_length_above_the_capacity_is_refused_before_any_value_is_read() {
-    // 9 values announced, none present: the capacity check fires, not a truncation.
+    // 9 values announced, none present: the capacity check fires first.
     let mut bytes = Vec::new();
     bytes.extend_from_slice(&1u64.to_le_bytes());
     bytes.extend_from_slice(&2u64.to_le_bytes());

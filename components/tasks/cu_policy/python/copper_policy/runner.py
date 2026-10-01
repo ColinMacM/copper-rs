@@ -184,8 +184,8 @@ def serve(policy, connect_port, seconds, *, kill_after=None, inject=None, delay_
     s = session(connect_port=connect_port)
     pub = s.declare_publisher(keys.action)
     # Newest-wins slots filled by Zenoh's own threads, so the loop below sleeps on an event and
-    # wakes the moment an observation lands, instead of polling on a timer. The policy always
-    # works on the newest observation; an older one that was never taken is overwritten.
+    # wakes the moment an observation lands. The policy works on the newest observation; an older
+    # one still waiting is overwritten.
     latest = {"obs": None, "img": None}
     wake = threading.Event()
     lock = threading.Lock()
@@ -234,7 +234,7 @@ def serve(policy, connect_port, seconds, *, kill_after=None, inject=None, delay_
         flat = [v for step in steps for v in step]
         if inject == "nan" and stats["obs"] % 5 == 0:
             # Early steps, where the governor would play them: a chunk is usually replaced after
-            # a step or two, so a NaN deep inside it would never be executed.
+            # a step or two, so a NaN deep inside it would stay unplayed.
             for step in range(0, 8):
                 flat[step * wire.JOINTS + step % wire.JOINTS] = float("nan")
         if delay_s:

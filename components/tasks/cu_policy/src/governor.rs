@@ -28,12 +28,12 @@ pub struct SchedParams {
     pub margin: u32,
     /// Delay assumed until a real one has been measured, in cycles.
     pub d_init: u32,
-    /// Prediction horizon `H` in steps; the execution horizon never exceeds `H - d`.
+    /// Prediction horizon `H` in steps; the execution horizon is capped at `H - d`.
     pub horizon: u32,
     /// Tracking error (goal units) above which the plan is replaced at once, regardless of
     /// `s_min`; 0 disables.
     pub replan_threshold: f32,
-    /// Cycles after which a request that was never answered is dropped.
+    /// Cycles after which an unanswered request is dropped.
     pub pending_timeout: u32,
     /// How the policy plans, sent with every request: `MODE_NAIVE` or `MODE_RTC`.
     pub mode: u32,
@@ -47,7 +47,7 @@ pub struct SchedParams {
     pub beta: f32,
     /// Cross-chunk handover: after a new chunk is accepted, the played target moves from the
     /// old chunk's step to the new chunk's over this many steps (weight `(n + 1) / (blend + 1)`
-    /// for the n-th), so a late or inconsistent chunk cannot make the target jump. 0 disables.
+    /// for the n-th), so a late or inconsistent chunk moves the target in small steps. 0 turns it off.
     pub blend_steps: u32,
 }
 
@@ -102,7 +102,7 @@ pub enum Status {
     Hold,
     HoldExhausted,
     HoldExpired,
-    /// No valid measurement this cycle: the goal is held and the chunk does not advance.
+    /// No valid measurement this cycle: the goal is held and the chunk waits.
     HoldNoFeedback,
 }
 
@@ -343,8 +343,8 @@ impl GovernorCore {
             }
         }
         if meas.is_none() {
-            // Without a measurement the lead window cannot be applied and a failed read may mean
-            // the arm is not where the chunk assumes, so nothing is played this cycle.
+            // The lead window needs the measurement, and a failed read may mean the arm is away
+            // from where the chunk assumes, so the cycle holds.
             self.held_cycles += 1;
             return (Some(self.goal), Status::HoldNoFeedback);
         }
@@ -1120,7 +1120,7 @@ mod tests {
         g.step(5 * MS, None, None, Some(&Z));
         let e = g.exec_state();
         assert!(e.has(ExecState::CHUNK_ACTIVE) && !e.has(ExecState::PLAYED));
-        // expired: no longer active
+        // expired: the chunk is inactive
         g.step(400 * MS, None, None, Some(&Z));
         assert!(!g.exec_state().has(ExecState::CHUNK_ACTIVE));
     }
@@ -1210,8 +1210,8 @@ mod tests {
         let mut g = sched_core(5, 0.0);
         g.step(0, Some(0), None, Some(&Z));
         g.step(MS, Some(1), Some(&long_chunk(0)), Some(&Z));
-        // The request goes out at step 5 (cycle 5) and is never answered: nothing follows it
-        // until the 25-cycle timeout has passed.
+        // The request goes out at step 5 (cycle 5) and stays unanswered: the next one follows
+        // the 25-cycle timeout.
         let mut asked = Vec::new();
         for t in 2..31u64 {
             g.step(t * MS, Some(t), None, Some(&Z));

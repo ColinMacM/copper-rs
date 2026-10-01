@@ -1,6 +1,6 @@
 //! Bridge between a Copper graph and an out-of-process policy, over Zenoh.
 //!
-//! The cycle thread never performs I/O, never allocates and never waits:
+//! The cycle thread only copies fixed-size data:
 //!
 //! - `send` encodes the payload into a fixed slot and pushes it into a lock-free ring;
 //! - `receive` copies the newest received sample out of a fixed mailbox and decodes it;
@@ -8,7 +8,7 @@
 //!
 //! A full ring drops the new message, and a mailbox keeps only the newest sample. Both are
 //! counted in [`LinkStats`]. The worker opens the session in the background and reconnects on
-//! failure, so an absent peer or router never stalls the graph.
+//! failure, so the graph keeps running while the peer or router is absent.
 //!
 //! Wire format: bincode with fixed-width little-endian integers, payload only (no `CuMsg`
 //! envelope), so a non-Rust peer can decode it with `struct`.
@@ -373,7 +373,7 @@ where
             return Ok(());
         }
         // The worker holds this lock only for a memcpy; if it is mid-write, the sample is
-        // taken on the next cycle instead of waiting.
+        // taken on the next cycle.
         let mut taken = [0u8; RX_SLOT_BYTES];
         let len = match rx.mailbox.try_lock() {
             Ok(mut mailbox) => mailbox.take_into(&mut taken),

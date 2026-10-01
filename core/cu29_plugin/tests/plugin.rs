@@ -1,3 +1,5 @@
+#![cfg(feature = "expand")]
+
 use std::collections::BTreeMap;
 use std::path::Path;
 

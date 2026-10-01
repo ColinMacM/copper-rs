@@ -7,7 +7,7 @@
 //!   joint positions and an [`ObsStamp`]; it outputs one goal per cycle, the state of what it
 //!   executes ([`ExecState`]) and, when its scheduler decides the policy should be asked again,
 //!   an [`InferenceRequest`]. Everything `process()` touches has a fixed capacity, so the cycle
-//!   never allocates.
+//!   is allocation-free.
 //! - [`link`] (feature `link`) is the Zenoh bridge that carries these messages to the policy
 //!   process.
 //! - [`server`] (feature `server`) serves a policy written in Rust to the loop.

@@ -185,7 +185,8 @@ graph-view-check:
 plugin-check:
 	cargo +stable clippy -p cu29-plugin -p cu-plugin -p cu-demo-smoothing -p cu-plugin-demo --all-targets -- --deny warnings
 	cargo +stable test -p cu29-plugin -p cu-plugin -p cu-plugin-demo
-	cargo +stable test -p cu29-runtime --test plugins
+	cargo +stable test -p cu29-plugin --no-default-features
+	cargo +stable test -p cu29-runtime --features plugins --test plugins
 	cargo +stable test -p cu-policy --test plugin
 
 # Create a plugin directory with a manifest and a fragment: just plugin-new pid_loop [dir]
@@ -219,6 +220,10 @@ vla-loop-check:
 	just plugin-validate components/tasks/cu_policy
 	cargo +stable test -p cu-vla-loop -- --test-threads=1
 	cd components/tasks/cu_policy && python3 -m pytest -q
+
+# Serve a Rust policy to the policy loop on a Zenoh port: just rust-policy vla 7447
+rust-policy prefix="vla" port="7447":
+	cargo +stable run -q -p cu-policy --features server --example rust_policy -- --key-prefix {{prefix}} --connect-port {{port}}
 
 # UDP carrier contracts and generated sender/session-router localhost integration.
 logstream-udp-check:

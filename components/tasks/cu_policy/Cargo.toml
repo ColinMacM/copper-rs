@@ -23,6 +23,8 @@ default = ["std"]
 std = ["dep:cu29", "dep:serde", "dep:bincode"]
 # A policy server written in Rust.
 server = ["std", "dep:zenoh"]
+# The payloads' bincode encoding; `std` includes it. The name is the workspace-wide feature.
+bincode = ["dep:bincode"]
 # The Zenoh bridge to the policy process.
 link = ["std", "dep:cu-sensor-payloads", "dep:rtrb", "dep:zenoh"]
 # Deterministic synthetic sources and sink used by this crate's tests and benchmarks.

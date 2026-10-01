@@ -21,7 +21,7 @@ pub struct LinkStatus {
     pub tx_too_large: u64,
     pub tx_publish_errors: u64,
     pub rx_received: u64,
-    /// A received sample replaced another that the cycle never took.
+    /// A received sample replaced another that was still waiting in the mailbox.
     pub rx_overwritten: u64,
     pub rx_too_large: u64,
     /// A received sample that did not decode. A schema mismatch shows up here and nowhere else:

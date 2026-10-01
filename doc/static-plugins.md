@@ -12,9 +12,8 @@ content pins are recorded in the effective configuration that Copper writes into
 the unified log.
 
 Plugin support is opt-in. Enable the `plugins` feature of `cu29` (or of
-`cu29-runtime` and `cu29-derive`). Without it, a configuration that has a
-`plugins` section fails with an error that names the feature, and the plugin
-loader is not compiled in.
+`cu29-runtime` and `cu29-derive`). With the feature off, a configuration that has a
+`plugins` section fails with an error that names the feature.
 
 [`examples/cu_plugin_demo`](../examples/cu_plugin_demo) is a complete
 application built from a plugin.
@@ -70,7 +69,7 @@ Unknown fields are errors, so a misspelled key is reported where it is written.
 A fragment is a RON file with the sections `tasks`, `bridges`, `resources` and
 `cnx`. Application-level settings (`logging`, `runtime`, `monitors`, `missions`,
 `log_streaming`, `constants`) and nested `includes` or `plugins` belong to the
-application and are not accepted in a fragment. Individual nodes may still set
+application; a fragment holds the four sections above. Individual nodes may still set
 `missions` themselves.
 
 ```ron
@@ -101,7 +100,7 @@ read back as a float.
 
 Every `id` a fragment declares in `tasks`, `bridges` or `resources` starts with
 `{{instance}}_`. An application can therefore use one plugin several times, and
-two plugins can never claim the same id.
+two plugins claim distinct ids.
 
 ## 3. Parameters
 
@@ -112,7 +111,7 @@ Each parameter has a `kind` and optionally a `default`:
 | `Bool` | `true`, `false` | |
 | `Int` | integers | `min`, `max` |
 | `Float` | finite numbers; an integer literal is converted | `min`, `max` |
-| `Str` | text without `"`, `\` or control characters | |
+| `Str` | text free of `"`, `\` or control characters | |
 | `Enum([...])` | one of the listed strings | |
 
 A parameter without a default is required. Copper rejects unknown parameters,
@@ -138,7 +137,7 @@ plugins: [
 | Field | Meaning |
 | --- | --- |
 | `path` | Plugin directory, relative to the configuration file. |
-| `fragment` | Which fragment of the plugin to instantiate. |
+| `fragment` | Which fragment of the plugin to instantiate. A plugin can offer several fragments for different configurations of the same components, such as `loop` and `rtc_loop` of `cu-policy-loop`; the effective configuration records the fragment name. |
 | `instance` | Instance name: lowercase letters, digits and `_`, starting with a letter. Unique per application. |
 | `params` | Parameter values. |
 | `pin` | Content hash of the plugin (section 5). |
@@ -175,10 +174,9 @@ files on disk each time it reads the configuration at build time. A mismatch sto
 the build and prints the hash that was computed, so an intentional update is a
 one-line change in the application configuration.
 
-The check happens only while the configuration is read at build time. The
-application embeds the expanded configuration, so a built application does not
-read the plugin directory again, and editing a plugin file after the build has no
-effect on it. The macro tracks the plugin files, so editing one rebuilds the
+The check happens while the configuration is read at build time. The application
+embeds the expanded configuration and reads the plugin directory at build time
+only, so editing a plugin file after the build leaves the built application as it was. The macro tracks the plugin files, so editing one rebuilds the
 application.
 
 The effective configuration lists every plugin instance with its id, version,
@@ -237,6 +235,6 @@ the process, so start the application from the directory the plugin `path` is
 relative to, or write `path` as an absolute path.
 
 The pin covers the script as it was at build time. Python assets are read from disk
-when the application runs, so a script edited after the build runs as edited and is
-no longer the content that was pinned. Treat the directory as part of the
+when the application runs, so a script edited after the build runs as edited and its
+content differs from the pin. Treat the directory as part of the
 deployment, or copy the assets next to the binary and start from there.

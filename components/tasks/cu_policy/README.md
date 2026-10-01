@@ -7,7 +7,7 @@ current one executes.
 
 | Part | Where | What it is |
 | --- | --- | --- |
-| Wire format | `src/wire.rs` | The bytes of every message between the graph and the policy process. No dependencies; builds without `std`. |
+| Wire format | `src/wire.rs` | The bytes of every message between the graph and the policy process. Self-contained; builds for `no_std`. |
 | Governor | `src/governor.rs` | `ActionGovernor`, a `CuTask`, with the chunk scheduler. |
 | Link | `src/link/` | `PolicyLink`, the Zenoh bridge to the policy process. |
 | Policy server, Rust | `src/server.rs` | Serves a policy written in Rust over Zenoh. |
@@ -18,7 +18,7 @@ current one executes.
 
 | Feature | Provides |
 | --- | --- |
-| `std` (default) | The governor, the scheduler and the payloads. Without it the crate is `wire` alone and builds as `no_std`. |
+| `std` (default) | The governor, the scheduler and the payloads. With default features off the crate is `wire` alone and builds for `no_std`. |
 | `link` | The Zenoh bridge `link::PolicyLink`. |
 | `server` | The Rust policy server, `server::serve`. |
 | `testkit` | Deterministic synthetic sources and a sink for tests and benchmarks. |
@@ -31,13 +31,13 @@ by an independent encoder, that the Rust tests (`tests/golden.rs`) and the Pytho
 (`python/tests/test_golden.py`) both check. The payload types in `payloads.rs` encode through
 the same functions, so the bytes on the link and the fields in the Copper log follow one layout.
 
-Decoding fills buffers the caller provides, never allocates, and refuses a length above the
-capacity of the message before reading any value.
+Decoding fills buffers the caller provides and is stack-only; a length above the capacity of
+the message is refused before any value is read.
 
 ## Governor
 
 `ActionGovernor` is the last software gate between a remote policy and an arm. Everything
-`process()` touches has a fixed capacity, so the cycle never allocates.
+`process()` touches has a fixed capacity, so the cycle is allocation-free.
 
 Ports, in the order the task binds them:
 
@@ -51,7 +51,7 @@ Ports, in the order the task binds them:
 | output | `InferenceRequest` | Present on the cycles where the scheduler asks the policy again. |
 
 A chunk is refused when it is malformed, holds a non-finite value, is older than `max_age_ms`,
-names an observation the governor never stamped, or is older than the chunk already accepted.
+names an observation outside the governor's history, or is older than the chunk already accepted.
 An accepted chunk starts at the step that matches the time that has passed since its
 observation, so a chunk that arrives `d` cycles late continues the trajectory it was computed
 for. Each goal is clamped to the joint limits, to `max_step` away from the previous goal and to
@@ -67,7 +67,7 @@ Configuration keys (goal units are the units of the arm's commands):
 | `max_step`, `max_lead` | Largest change per cycle, and largest distance from the measurement. |
 | `cycle_ms` | The control period; sets how many steps a late chunk skips. |
 | `max_age_ms` | Oldest accepted chunk, measured from its observation. At most 63 cycles. |
-| `hold_deadline_ms` | How long a chunk keeps playing without a newer one. |
+| `hold_deadline_ms` | How long a chunk keeps playing until a newer one arrives. |
 | `time_from_feedback` | Take "now" from the measurement's time (default `true`), which makes a replay exact. |
 | `blend_steps` | Cross-fade between the old and the new chunk over this many steps (default 0). |
 
@@ -86,9 +86,10 @@ cycles with the same contents.
 | `sched_s_min` | Steps of a chunk to play before the next request. 0 turns the scheduler off. |
 | `sched_margin` | The horizon is at least the delay estimate plus this (default 4). |
 | `sched_d_init` | Delay assumed until one has been measured (default 3). |
-| `sched_horizon` | The policy's prediction horizon; the horizon never exceeds it minus `d` (default 50). |
+| `sched_horizon` | The policy's prediction horizon; the horizon is capped at it minus `d` (default 50). |
 | `replan_threshold` | Tracking error above which the plan is replaced at once; 0 turns it off. |
 | `sched_pending_timeout` | Cycles after which an unanswered request is asked again (default 25). |
+| `rtc_mode`, `rtc_beta`, `rtc_denoise_steps`, `rtc_best_of`, `rtc_project`, `rtc_roll_obs`, `rtc_positional_noise` | The options sent to the policy with every request; see Real-time chunking. |
 
 The delay estimate is the largest of the last ten delays the governor measured: it knows the step
 an accepted chunk starts at (`ExecState.accept_skip`), which is the delay that chunk had. A chunk
@@ -98,8 +99,8 @@ plays for `s_min` steps, so `hold_deadline_ms` has to exceed that time.
 
 `link::PolicyLink` is a bridge whose cycle side only copies into fixed slots; a worker thread
 owns the Zenoh session. A full ring drops the new message and a mailbox keeps the newest
-sample; both are counted. The worker opens the session in the background and reconnects, so an
-absent peer or router does not stall the graph.
+sample; both are counted. The worker opens the session in the background and reconnects, so the
+graph keeps running while the peer or router is absent.
 
 | Channel | Direction | Message |
 | --- | --- | --- |
@@ -119,7 +120,7 @@ A channel's `route` is its Zenoh key; the Python package derives all of them fro
 A policy answers the governor's `InferenceRequest`s: the observation, the delay estimate `d`, the
 steps `s` of the active chunk already played, and that chunk's unplayed remainder. It returns a
 chunk, steps of 6 values, whose first step belongs to the control cycle of the request's
-observation. The scheduler asks only when `s_min` is above 0. In both languages the policy server
+observation. The scheduler asks while `s_min` is above 0. In both languages the policy server
 subscribes to `<prefix>/infer` and publishes on `<prefix>/action`, where `<prefix>` is the
 plugin's instance name.
 
@@ -152,10 +153,12 @@ let stats = serve(policy, ServerConfig::new("vla"), &AtomicBool::new(false))?;
 ```
 
 `server::answer` in both languages is the request-to-reply step on its own: decode a request, ask
-the policy, encode the chunk. A request that does not decode, and a plan that is not whole steps
+the policy, encode the chunk. A request that fails to decode, and a plan outside whole steps
 within 50 steps, are refused and counted. `ServerConfig::from_json5` takes the Zenoh session
 settings in the form of the link's `zenoh_config_json`. `tests/rust_policy.rs` and
-`tests/python_policy.rs` of `examples/cu_vla_loop` run the loop against each.
+`tests/python_policy.rs` of `examples/cu_vla_loop` run the loop against each. `just rust-policy <prefix>
+<port>` runs the example Rust server (`examples/rust_policy.rs`), which takes `--key-prefix`,
+`--connect-port` and `--seconds`.
 
 ## Python package
 
@@ -198,6 +201,24 @@ residual, in policy units, above which a chunk counts as unhealthy; the runner r
 
 The rows are measured in `copper_policy.rtc_sim.ablate` (40 seeded episodes, 200 hand-overs per
 row, a delay of 8 cycles; jump and acceleration in ticks) on a synthetic policy and a simulated arm.
+
+#### Delays that vary
+
+`tests/test_rtc_robustness.py` runs the same 40 episodes under other delay conditions, again on
+the synthetic policy and the simulated arm. Mean and maximum jump are in ticks; a flip is a change
+of side of the obstacle.
+
+| Condition | Naive | RTC | Reading |
+| --- | --- | --- | --- |
+| Constant delay of 8 | 78 / 349, 1.32 flips | 45 / 189, 0.93 flips | RTC lowers jumps and flips; about one flip per episode remains. |
+| Delay varying between 4 and 12 | 80 / 479, 1.27 flips | 46 / 346, 0.95 flips | The mean gain holds and the worst jump grows. |
+| `d_init` 0 or 3, true delay 8 | | 45 / 189 | The first measured delay replaces the initial estimate. |
+| `d_init` 20, true delay 8 | | 36 / 97, 0.78 flips | The estimate stays at 20 for ten chunks, so more steps are frozen. The jump metric shows no cost; the cost in reactivity is unmeasured. |
+| One chunk per episode older than `max_age` | 84 / 243 | 66 / 243 | The governor refuses that chunk; the gain narrows. |
+| RTC pays 2 more cycles of delay than naive (10 against 8) | 78 / 349, 1.32 flips | 44 / 206, 0.88 flips | The gain holds up to 4 more cycles. |
+
+These runs show how the schedule behaves under the stated delays. The policy is synthetic and
+the arm is simulated, so they show nothing about a real arm or a large policy.
 
 ## Plugin
 

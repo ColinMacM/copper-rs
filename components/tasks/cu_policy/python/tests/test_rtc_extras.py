@@ -141,7 +141,7 @@ def test_projection_is_a_guarantee_not_a_speed_up(ablation):
     plain, proj = ablation["rtc"], ablation["rtc+project"]
     assert proj["unhealthy"] == 0 and plain["unhealthy"] > 0.5 * plain["guided"]
     # The steps it corrects are the ones the governor skips when the delay estimate covers the
-    # delay, so what is played does not change.
+    # delay, so what is played stays the same.
     assert proj["mean"] == pytest.approx(plain["mean"], rel=1e-6)
 
 
