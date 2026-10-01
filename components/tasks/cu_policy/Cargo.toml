@@ -21,6 +21,8 @@ environments = ["host"]
 default = ["std"]
 # The governor, the scheduler and the payloads. Without it the crate is the wire format alone.
 std = ["dep:cu29", "dep:serde", "dep:bincode"]
+# A policy server written in Rust.
+server = ["std", "dep:zenoh"]
 # The Zenoh bridge to the policy process.
 link = ["std", "dep:cu-sensor-payloads", "dep:rtrb", "dep:zenoh"]
 # Deterministic synthetic sources and sink used by this crate's tests and benchmarks.
@@ -35,7 +37,7 @@ rtrb = { version = "0.3.3", optional = true }
 zenoh = { workspace = true, default-features = false, features = ["transport_tcp"], optional = true }
 
 [dev-dependencies]
-cu-policy = { path = ".", features = ["link", "testkit"] }
+cu-policy = { path = ".", features = ["link", "server", "testkit"] }
 cu29-export = { workspace = true }
 cu29-plugin = { workspace = true, features = ["expand"] }
 cu29-unifiedlog = { workspace = true }

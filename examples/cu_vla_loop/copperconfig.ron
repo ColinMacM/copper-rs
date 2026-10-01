@@ -42,7 +42,7 @@
                 "s_min": 0,
                 "blend_steps": 0,
             },
-            pin: "blake3:d3ae4a28b691bba68d15e3a64382a1133b0fb780fa097b2585d7cc1e8218cbc4",
+            pin: "blake3:1e17fc7ce167c6c2aba9c8b22a5c18cf484ea3a087d2de92b893c063219a798d",
         ),
     ],
     logging: (slab_size_mib: 64, section_size_mib: 16, keyframe_interval: 30),

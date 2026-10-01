@@ -4,8 +4,9 @@ The byte layout of every message is defined in `src/wire.rs` of the `cu-policy` 
 `tests/golden/vectors.json` holds vectors that both implementations are tested against. All
 integers are little-endian and fixed-width.
 
-A decoder raises `WireError`, a `ValueError`, whose `kind` is `"truncated"` (the input ends early
-or has bytes left over) or `"too_long"` (a length field above the capacity of the message).
+A codec raises `WireError`, a `ValueError`, whose `kind` is `"truncated"` (the input ends early or
+has bytes left over), `"too_long"` (a length above the capacity of the message) or
+`"partial_step"` (a chunk that is not a whole number of steps).
 """
 import collections
 import struct
@@ -23,7 +24,7 @@ IMAGE_HEADER_BYTES = _IMAGE_HEADER.size
 
 
 class WireError(ValueError):
-    """A message that does not decode. `kind` is "truncated" or "too_long"."""
+    """A message that does not decode or encode. `kind` is "truncated", "too_long" or "partial_step"."""
 
     def __init__(self, kind, message):
         super().__init__(message)
@@ -85,7 +86,7 @@ def encode_chunk(obs_seq, values):
     non-finite or out-of-range values is the governor's job, not the runner's."""
     values = list(values)
     if len(values) % JOINTS:
-        raise ValueError(f"{len(values)} values is not a whole number of {JOINTS}-joint steps")
+        raise WireError("partial_step", f"{len(values)} values is not a whole number of {JOINTS}-joint steps")
     return _CHUNK_HEADER.pack(obs_seq, len(values)) + _pack_floats(values, MAX_CHUNK_VALUES, "chunk")
 
 

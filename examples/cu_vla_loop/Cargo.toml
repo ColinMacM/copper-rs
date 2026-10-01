@@ -14,7 +14,7 @@ publish = false
 
 [dependencies]
 cu29 = { workspace = true, features = ["reflect", "plugins"] }
-cu-policy = { workspace = true, features = ["std", "link"] }
+cu-policy = { workspace = true, features = ["std", "link", "server"] }
 cu-sensor-payloads = { workspace = true }
 serde = { workspace = true }
 bincode = { workspace = true }

@@ -40,6 +40,7 @@
         "python/copper_policy/rtc.py",
         "python/copper_policy/rtc_sim.py",
         "python/copper_policy/runner.py",
+        "python/copper_policy/server.py",
         "python/copper_policy/wire.py",
         "tests/golden/vectors.json",
     ],

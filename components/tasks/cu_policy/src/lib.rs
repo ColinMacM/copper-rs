@@ -10,6 +10,7 @@
 //!   never allocates.
 //! - [`link`] (feature `link`) is the Zenoh bridge that carries these messages to the policy
 //!   process.
+//! - [`server`] (feature `server`) serves a policy written in Rust to the loop.
 
 #![cfg_attr(not(feature = "std"), no_std)]
 
@@ -19,6 +20,8 @@ pub mod governor;
 pub mod link;
 #[cfg(feature = "std")]
 pub mod payloads;
+#[cfg(feature = "server")]
+pub mod server;
 #[cfg(feature = "testkit")]
 pub mod testkit;
 pub mod wire;

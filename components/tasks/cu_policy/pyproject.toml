@@ -3,7 +3,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "copper-policy"
+name = "copper"
 version = "1.3.0.dev0"
 description = "Serve a policy to a Copper policy loop: the wire format shared with the cu-policy crate, the Zenoh transport, real-time chunking and a command line."
 readme = "README.md"

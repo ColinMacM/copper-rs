@@ -10,7 +10,8 @@ current one executes.
 | Wire format | `src/wire.rs` | The bytes of every message between the graph and the policy process. No dependencies; builds without `std`. |
 | Governor | `src/governor.rs` | `ActionGovernor`, a `CuTask`, with the chunk scheduler. |
 | Link | `src/link/` | `PolicyLink`, the Zenoh bridge to the policy process. |
-| Python package | `python/copper_policy/` | Serves a policy over Zenoh. |
+| Policy server, Rust | `src/server.rs` | Serves a policy written in Rust over Zenoh. |
+| Python package `copper` | `python/copper_policy/` | Serves a policy written in Python over Zenoh; installs the module `copper_policy`. |
 | Plugin | `plugin.ron`, `fragments/` | The governor and the link as a static plugin, `cu-policy-loop`. |
 
 ## Features
@@ -19,6 +20,7 @@ current one executes.
 | --- | --- |
 | `std` (default) | The governor, the scheduler and the payloads. Without it the crate is `wire` alone and builds as `no_std`. |
 | `link` | The Zenoh bridge `link::PolicyLink`. |
+| `server` | The Rust policy server, `server::serve`. |
 | `testkit` | Deterministic synthetic sources and a sink for tests and benchmarks. |
 
 ## Wire format
@@ -112,10 +114,53 @@ A channel's `route` is its Zenoh key; the Python package derives all of them fro
 `--key-prefix`. The session is configured with the bridge's `zenoh_config_json` or
 `zenoh_config_file` keys.
 
+## Writing a policy
+
+A policy answers the governor's `InferenceRequest`s: the observation, the delay estimate `d`, the
+steps `s` of the active chunk already played, and that chunk's unplayed remainder. It returns a
+chunk, steps of 6 values, whose first step belongs to the control cycle of the request's
+observation. The scheduler asks only when `s_min` is above 0. In both languages the policy server
+subscribes to `<prefix>/infer` and publishes on `<prefix>/action`, where `<prefix>` is the
+plugin's instance name.
+
+In Python (`copper_policy.server`):
+
+```python
+import math
+from copper_policy import server
+
+def policy(request):  # request: wire.Request
+    return [2048 + 400 * math.sin(0.08 * (request.obs_seq + i)) for i in range(20) for _ in range(6)]
+
+server.serve(policy, connect_port=7447, seconds=60, prefix="vla")
+```
+
+In Rust (`cu_policy::server`, feature `server`):
+
+```rust
+use std::sync::atomic::AtomicBool;
+use cu_policy::server::{ServerConfig, serve};
+use cu_policy::wire::{CHUNK_LEN, JOINTS, Request};
+
+let policy = |request: &Request, out: &mut [f32; CHUNK_LEN]| {
+    for (i, step) in out.as_chunks_mut::<JOINTS>().0.iter_mut().take(20).enumerate() {
+        step.fill(2048.0 + 400.0 * ((request.obs_seq as f32 + i as f32) * 0.08).sin());
+    }
+    20 * JOINTS
+};
+let stats = serve(policy, ServerConfig::new("vla"), &AtomicBool::new(false))?;
+```
+
+`server::answer` in both languages is the request-to-reply step on its own: decode a request, ask
+the policy, encode the chunk. A request that does not decode, and a plan that is not whole steps
+within 50 steps, are refused and counted. `ServerConfig::from_json5` takes the Zenoh session
+settings in the form of the link's `zenoh_config_json`. `tests/rust_policy.rs` and
+`tests/python_policy.rs` of `examples/cu_vla_loop` run the loop against each.
+
 ## Python package
 
 ```bash
-pip install ./components/tasks/cu_policy            # zenoh, numpy
+pip install ./components/tasks/cu_policy            # copper: zenoh, numpy
 pip install "./components/tasks/cu_policy[flow]"    # adds torch: real-time chunking, flow policies
 pip install "./components/tasks/cu_policy[act]"     # adds torch and lerobot: the ACT policy
 python -m copper_policy --connect-port 7447 --key-prefix vla
