@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from vla_runner import calibration
+from copper_policy import calibration
 
 lerobot = pytest.importorskip("lerobot")
 

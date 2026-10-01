@@ -9,11 +9,19 @@ import zenoh
 
 from . import wire
 
-OBS_KEY = "vla/obs"
-ACTION_KEY = "vla/action"
-IMAGE_KEY = "vla/img"
-EXEC_KEY = "vla/exec"
-REQUEST_KEY = "vla/infer"
+DEFAULT_KEY_PREFIX = "vla"
+
+
+class Keys:
+    """The Zenoh routes of one policy loop: `<prefix>/obs`, `/action`, `/img`, `/exec`, `/infer`.
+    They are the routes configured on the Copper side's link channels."""
+
+    def __init__(self, prefix=DEFAULT_KEY_PREFIX):
+        self.obs = f"{prefix}/obs"
+        self.action = f"{prefix}/action"
+        self.img = f"{prefix}/img"
+        self.exec = f"{prefix}/exec"
+        self.infer = f"{prefix}/infer"
 
 
 def session(connect_port=None, listen_port=None):
@@ -63,7 +71,8 @@ class ExecMetrics:
                 "max_accel": round(self.max_accel, 1), "played": self.played, "max_delay": self.max_delay}
 
 
-def serve_flow(policy, connect_port, seconds, *, cfg, delay_s=0.0, kill_after=None, log=None, seed=0):
+def serve_flow(policy, connect_port, seconds, *, cfg, delay_s=0.0, kill_after=None, log=None, seed=0,
+               prefix=DEFAULT_KEY_PREFIX):
     """Answer the governor's inference requests with a flow-matching policy.
 
     The server keeps no schedule. The scheduler in the governor decides when to ask and sends
@@ -82,8 +91,9 @@ def serve_flow(policy, connect_port, seconds, *, cfg, delay_s=0.0, kill_after=No
 
     torch.set_num_threads(2)
     torch.manual_seed(seed)
+    keys = Keys(prefix)
     sess = session(connect_port=connect_port)
-    pub = sess.declare_publisher(ACTION_KEY)
+    pub = sess.declare_publisher(keys.action)
     metrics = ExecMetrics()
     lock = threading.Lock()
     wake = threading.Event()
@@ -110,8 +120,8 @@ def serve_flow(policy, connect_port, seconds, *, cfg, delay_s=0.0, kill_after=No
         with lock:
             metrics.update(e, sent_ticks.get(e.chunk_seq))
 
-    sess.declare_subscriber(REQUEST_KEY, on_request)
-    sess.declare_subscriber(EXEC_KEY, on_exec)
+    sess.declare_subscriber(keys.infer, on_request)
+    sess.declare_subscriber(keys.exec, on_exec)
     end = time.monotonic() + seconds
     killed_at = time.monotonic() + kill_after if kill_after else None
     next_report = time.monotonic() + 1.0
@@ -158,12 +168,14 @@ def serve_flow(policy, connect_port, seconds, *, cfg, delay_s=0.0, kill_after=No
     return stats
 
 
-def serve(policy, connect_port, seconds, *, kill_after=None, inject=None, delay_s=0.0, log=None):
+def serve(policy, connect_port, seconds, *, kill_after=None, inject=None, delay_s=0.0, log=None,
+          prefix=DEFAULT_KEY_PREFIX):
     """Runs until `seconds` elapse. `inject` (test switches): "nan" poisons every 5th chunk, "garbage" interleaves undecodable messages,
     "wild" is handled by the policy itself, "stale" holds each chunk back by `delay_s`.
     Returns a dict of counters."""
+    keys = Keys(prefix)
     s = session(connect_port=connect_port)
-    pub = s.declare_publisher(ACTION_KEY)
+    pub = s.declare_publisher(keys.action)
     # Newest-wins slots filled by Zenoh's own threads, so the loop below sleeps on an event and
     # wakes the moment an observation lands, instead of polling on a timer. The policy always
     # works on the newest observation; an older one that was never taken is overwritten.
@@ -180,8 +192,8 @@ def serve(policy, connect_port, seconds, *, kill_after=None, inject=None, delay_
         with lock:
             latest["img"] = bytes(sample.payload)
 
-    sub = s.declare_subscriber(OBS_KEY, on_obs)
-    img_sub = s.declare_subscriber(IMAGE_KEY, on_img)
+    sub = s.declare_subscriber(keys.obs, on_obs)
+    img_sub = s.declare_subscriber(keys.img, on_img)
     stats = {"obs": 0, "chunks": 0, "bad_obs": 0, "infer_ms": [], "frames": 0, "bad_frames": 0, "last_frame_tov": 0}
     end = time.monotonic() + seconds
     killed_at = time.monotonic() + kill_after if kill_after else None
@@ -241,9 +253,10 @@ def main(argv=None):
 
     p = argparse.ArgumentParser(description="Serve a policy to the Copper VLA loop")
     p.add_argument("--connect-port", type=int, required=True)
+    p.add_argument("--key-prefix", default=DEFAULT_KEY_PREFIX, help="prefix of the Zenoh routes of the loop, as configured on the link channels")
     p.add_argument("--seconds", type=float, default=10.0)
     p.add_argument("--policy", choices=["scripted", "act", "flow"], default="scripted")
-    p.add_argument("--checkpoint", help="flow: trained checkpoint from vla_runner.flow_policy")
+    p.add_argument("--checkpoint", help="flow: trained checkpoint from copper_policy.flow_policy")
     p.add_argument("--rtc", choices=["on", "off"], default="on", help="flow: real-time chunking, or the naive asynchronous baseline")
     p.add_argument("--beta", type=float, default=5.0, help="flow: guidance weight clip")
     p.add_argument("--roll-obs", action="store_true", help="flow: plan from the state after the frozen prefix")
@@ -274,6 +287,7 @@ def main(argv=None):
         stats = serve_flow(
             flow_policy.load(a.checkpoint), a.connect_port, a.seconds, cfg=cfg,
             delay_s=a.delay_s, kill_after=a.kill_after, log=sys.stdout, seed=a.seed,
+            prefix=a.key_prefix,
         )
         stats["infer_ms"] = len(stats["infer_ms"])
         print(json.dumps(stats), flush=True)
@@ -286,7 +300,8 @@ def main(argv=None):
         policy = policies.build_act(a.calibration, modes)
     else:
         policy = policies.Scripted(amplitude=a.amplitude, target=a.target, steps=a.steps)
-    stats = serve(policy, a.connect_port, a.seconds, kill_after=a.kill_after, inject=a.inject, delay_s=a.delay_s, log=sys.stdout)
+    stats = serve(policy, a.connect_port, a.seconds, kill_after=a.kill_after, inject=a.inject, delay_s=a.delay_s,
+                  log=sys.stdout, prefix=a.key_prefix)
     stats["infer_ms"] = len(stats["infer_ms"])
     print(json.dumps(stats), flush=True)
     return 0

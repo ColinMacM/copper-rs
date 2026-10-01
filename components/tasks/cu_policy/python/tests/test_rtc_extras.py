@@ -5,8 +5,8 @@ import pytest
 import torch
 
 from test_rtc import gaussian_flow, smooth_prior
-from vla_runner import flow_policy as fp
-from vla_runner import rtc, rtc_sim
+from copper_policy import flow_policy as fp
+from copper_policy import rtc, rtc_sim
 
 H = 12
 

@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "copper-policy"
+version = "1.3.0.dev0"
+description = "Serve a policy to a Copper policy loop: the wire format shared with the cu-policy crate, the Zenoh transport, real-time chunking and a command line."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+dependencies = ["eclipse-zenoh", "numpy"]
+
+[project.optional-dependencies]
+flow = ["torch"]
+act = ["torch", "lerobot"]
+test = ["pytest"]
+
+[tool.setuptools.packages.find]
+where = ["python"]
+include = ["copper_policy*"]
+
+[tool.pytest.ini_options]
+testpaths = ["python/tests"]
+pythonpath = ["python"]

@@ -23,7 +23,10 @@ fn python_ready() -> bool {
 }
 
 fn python_dir() -> &'static str {
-    concat!(env!("CARGO_MANIFEST_DIR"), "/python")
+    concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../components/tasks/cu_policy/python"
+    )
 }
 
 /// The trained policy, built once and kept in the target tree between runs.
@@ -34,7 +37,7 @@ fn checkpoint() -> &'static Path {
         if !path.exists() {
             let tmp = path.with_extension("partial");
             let status = Command::new("python3")
-                .args(["-m", "vla_runner.flow_policy", "--out"])
+                .args(["-m", "copper_policy.flow_policy", "--out"])
                 .arg(&tmp)
                 .current_dir(python_dir())
                 .stderr(Stdio::null())
@@ -120,7 +123,7 @@ fn run_policy(use_rtc: bool, delay_s: f64, cycles: usize, seed: u64) -> Outcome 
             if i == 0 {
                 child = Some(
                     Command::new("python3")
-                        .args(["-m", "vla_runner", "--policy", "flow", "--connect-port"])
+                        .args(["-m", "copper_policy", "--policy", "flow", "--connect-port"])
                         .arg(port.to_string())
                         .args(["--seconds", &seconds.to_string(), "--checkpoint"])
                         .arg(ckpt)

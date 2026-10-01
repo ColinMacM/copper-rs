@@ -84,7 +84,7 @@ fn record(dir: &Path) -> usize {
                     Command::new("python3")
                         .args([
                             "-m",
-                            "vla_runner",
+                            "copper_policy",
                             "--connect-port",
                             &port.to_string(),
                             "--seconds",
@@ -95,7 +95,10 @@ fn record(dir: &Path) -> usize {
                             "--delay-s",
                             "0.2",
                         ])
-                        .current_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/python"))
+                        .current_dir(concat!(
+                            env!("CARGO_MANIFEST_DIR"),
+                            "/../../components/tasks/cu_policy/python"
+                        ))
                         .stdout(Stdio::null())
                         .stderr(Stdio::null())
                         .spawn()

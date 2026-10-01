@@ -3,7 +3,7 @@ import struct
 
 import pytest
 
-from vla_runner import wire
+from copper_policy import wire
 
 
 def test_obs_roundtrip_and_exact_layout():

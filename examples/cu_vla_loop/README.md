@@ -6,13 +6,13 @@ reproduces the `cu_feetech` behaviors that matter for safety, so the whole loop 
 hardware.
 
 ```text
-arm/positions -> obs -> link/obs ~~Zenoh~~> vla_runner (Python policy)
+arm/positions -> obs -> link/obs ~~Zenoh~~> copper_policy (Python policy)
                                                |
 arm/positions -> gov <- link/action <~~Zenoh~~-+
                   |
                   +-> arm/goals
 
-camera -> link/img ~~Zenoh~~> vla_runner          link/status -> status_probe (logged)
+camera -> link/img ~~Zenoh~~> copper_policy          link/status -> status_probe (logged)
 ```
 
 ## Pieces
@@ -21,7 +21,7 @@ camera -> link/img ~~Zenoh~~> vla_runner          link/status -> status_probe (l
 | --- | --- | --- |
 | Governor | `components/tasks/cu_policy` | Rejects non-finite, malformed, stale, out-of-order and unknown-observation chunks; clamps to joint limits; limits per-cycle step and lead over the measurement; holds when no fresh chunk or no measurement arrives. |
 | Link | `components/bridges/cu_policy_link` | Zenoh bridge whose cycle side only copies into fixed slots; a worker thread owns the session. Camera frames cross as a pooled-buffer handle, copied by the worker. Drops are counted, never blocking, and the counters are a `LinkStatus` message in the log. |
-| Runner | `python/vla_runner` | Serves a policy: blocks until the newest observation lands, then sends a chunk. Scripted and LeRobot ACT policies; LeRobot calibration conversion. |
+| Runner | `python/copper_policy` | Serves a policy: blocks until the newest observation lands, then sends a chunk. Scripted and LeRobot ACT policies; LeRobot calibration conversion. |
 | Arm | `cu_feetech` | Hardened: goal set to the present position before torque, non-finite goals refused, goals clamped to the calibrated range, failed reads yield no measurement, protective servo errors cut torque, optional goal timeout, torque off on drop. |
 
 ## Wire format
@@ -58,7 +58,7 @@ inference time, which is not measured here.
 
 ## Real-time chunking
 
-`python/vla_runner/rtc.py` implements Real-Time Chunking (Black, Galliker, Levine,
+`python/copper_policy/rtc.py` implements Real-Time Chunking (Black, Galliker, Levine,
 [arXiv 2506.07339](https://arxiv.org/abs/2506.07339)) from the paper: pseudoinverse-guided flow
 matching (Eq. 2-4) with the soft mask of Eq. 5 and the clipped guidance weight, and the
 bookkeeping of Algorithm 1 (`Chunker`: delay buffer, execution horizon, when to start the next
@@ -91,9 +91,9 @@ measurement is from the target played last cycle (`tracking_err`), the signal be
 `replan_threshold`.
 
 ```bash
-python -m vla_runner --policy flow --checkpoint flow.pt --connect-port P --rtc on   # RTC
-python -m vla_runner --policy flow --checkpoint flow.pt --connect-port P --rtc off  # naive async
-python -m vla_runner.flow_policy --out flow.pt                                      # train the demo policy
+python -m copper_policy --policy flow --checkpoint flow.pt --connect-port P --rtc on   # RTC
+python -m copper_policy --policy flow --checkpoint flow.pt --connect-port P --rtc off  # naive async
+python -m copper_policy.flow_policy --out flow.pt                                      # train the demo policy
 ```
 
 `--rtc off` keeps the same asynchronous schedule and samples each chunk freely, the paper's
@@ -158,7 +158,7 @@ checks the plumbing, not the gain.
 ## Units
 
 The arm bridge runs with `units: "raw"`, so the wire carries servo ticks. The runner converts to
-and from LeRobot units with the LeRobot calibration file (`vla_runner/calibration.py`), using
+and from LeRobot units with the LeRobot calibration file (`copper_policy/calibration.py`), using
 the formulas of `lerobot/motors/motors_bus.py`; `python/tests/test_calibration.py` compares them
 with the installed LeRobot. Calibrate the arm with LeRobot first.
 
@@ -168,7 +168,7 @@ with the installed LeRobot. Calibrate the arm with LeRobot first.
 just vla-loop-check
 ```
 
-The end-to-end tests start `python3 -m vla_runner` and need `import zenoh` to work (`pip install
+The end-to-end tests start `python3 -m copper_policy` and need `import zenoh` to work (`pip install
 eclipse-zenoh`); the ACT test also needs `lerobot`. Tests that cannot find them print `skipped`.
 
 ## Limits

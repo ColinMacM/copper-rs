@@ -35,14 +35,17 @@ fn spawn_policy(port: u16, seconds: f64, extra: &[&str]) -> Child {
     Command::new("python3")
         .args([
             "-m",
-            "vla_runner",
+            "copper_policy",
             "--connect-port",
             &port.to_string(),
             "--seconds",
             &seconds.to_string(),
         ])
         .args(extra)
-        .current_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/python"))
+        .current_dir(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../components/tasks/cu_policy/python"
+        ))
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()

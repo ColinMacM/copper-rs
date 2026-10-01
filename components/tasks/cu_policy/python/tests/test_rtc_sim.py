@@ -1,10 +1,10 @@
 """Real-time chunking against naive asynchronous execution, with a trained flow policy, over many
-simulated episodes (`vla_runner.rtc_sim`), plus checks that the policy itself is sound."""
+simulated episodes (`copper_policy.rtc_sim`), plus checks that the policy itself is sound."""
 import pytest
 import torch
 
-from vla_runner import flow_policy as fp
-from vla_runner import rtc, rtc_sim
+from copper_policy import flow_policy as fp
+from copper_policy import rtc, rtc_sim
 
 torch.set_num_threads(2)
 

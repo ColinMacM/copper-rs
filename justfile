@@ -216,7 +216,7 @@ vla-loop-check:
 	cargo +stable clippy -p cu-policy --all-features -p cu-vla-loop -p cu-feetech --all-targets -- --deny warnings
 	cargo +stable test -p cu-policy --all-features -p cu-feetech
 	cargo +stable test -p cu-vla-loop -- --test-threads=1
-	cd examples/cu_vla_loop/python && python3 -m pytest -q tests
+	cd components/tasks/cu_policy && python3 -m pytest -q
 
 # UDP carrier contracts and generated sender/session-router localhost integration.
 logstream-udp-check:

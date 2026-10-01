@@ -32,9 +32,12 @@ fn measure(hz: f64, cycles: usize) -> Vec<u64> {
             if i == 0 {
                 child = Some(
                     Command::new("python3")
-                        .args(["-m", "vla_runner", "--connect-port", &port.to_string()])
+                        .args(["-m", "copper_policy", "--connect-port", &port.to_string()])
                         .args(["--seconds", &(cycles as f64 / hz + 4.0).to_string()])
-                        .current_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/python"))
+                        .current_dir(concat!(
+                            env!("CARGO_MANIFEST_DIR"),
+                            "/../../components/tasks/cu_policy/python"
+                        ))
                         .stdout(Stdio::null())
                         .stderr(Stdio::null())
                         .spawn()

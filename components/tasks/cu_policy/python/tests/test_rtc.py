@@ -4,7 +4,7 @@ import math
 import pytest
 import torch
 
-from vla_runner import rtc, wire
+from copper_policy import rtc, wire
 
 torch.set_num_threads(2)
 

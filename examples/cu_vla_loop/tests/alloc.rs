@@ -102,13 +102,16 @@ fn the_cycle_thread_allocates_nothing_with_the_link_live() {
                     Command::new("python3")
                         .args([
                             "-m",
-                            "vla_runner",
+                            "copper_policy",
                             "--connect-port",
                             &port.to_string(),
                             "--seconds",
                             "14",
                         ])
-                        .current_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/python"))
+                        .current_dir(concat!(
+                            env!("CARGO_MANIFEST_DIR"),
+                            "/../../components/tasks/cu_policy/python"
+                        ))
                         .stdout(Stdio::null())
                         .stderr(Stdio::null())
                         .spawn()

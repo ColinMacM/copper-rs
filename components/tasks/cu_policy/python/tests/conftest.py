@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from vla_runner import flow_policy as fp
+from copper_policy import flow_policy as fp
 
 torch.set_num_threads(2)
 
