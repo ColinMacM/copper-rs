@@ -103,22 +103,13 @@ fn run_policy(use_rtc: bool, delay_s: f64, cycles: usize, seed: u64) -> Outcome 
     let dir = tempfile::tempdir().unwrap();
     let seconds = cycles as f64 / HZ + 3.0;
     let mut child = None;
-    // A chunk plays for s_min = 25 cycles (0.83 s) before the next is computed.
+    // The example's plugin entry is the RTC configuration: s_min 25, horizon 50, blend 3.
     run_configured(
         cycles,
         HZ,
         &dir.path().join("rtc.copper"),
         &listen_config(port),
-        // The scheduler runs in the governor: a chunk plays for at least s_min = 25 cycles
-        // (0.83 s) before the next request, so the hold deadline has to outlast that.
-        &[
-            ("hold_deadline_ms", 2500.0),
-            ("sched_s_min", 25.0),
-            ("sched_margin", 4.0),
-            ("sched_d_init", 3.0),
-            ("sched_horizon", 50.0),
-            ("blend_steps", 3.0),
-        ],
+        &[],
         |i| {
             if i == 0 {
                 child = Some(

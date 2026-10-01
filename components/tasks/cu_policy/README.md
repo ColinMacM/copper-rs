@@ -224,6 +224,9 @@ The fragment connects the chunk from the link into the governor and the governor
 `infer` outputs into the link. The routes are `<instance>/obs`, `/img`, `/exec`, `/infer` and
 `/action`, so `--key-prefix <instance>` matches.
 
+The plugin passes every parameter to the governor. The governor's own defaults (scheduler off,
+`blend_steps` 0) apply to a graph that configures the governor directly.
+
 | Parameter | Default | Meaning |
 | --- | --- | --- |
 | `min_0` ... `min_5`, `max_0` ... `max_5` | required | Joint limits. |
