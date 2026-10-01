@@ -1,0 +1,25 @@
+[package]
+name = "cu-policy"
+description = "Copper policy loop: the wire format between a Copper graph and an out-of-process policy, the action governor with its chunk scheduler, a Zenoh bridge, and the Python package that serves a policy."
+version.workspace = true
+authors.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+keywords.workspace = true
+categories.workspace = true
+homepage.workspace = true
+repository.workspace = true
+documentation = "https://docs.rs/cu-policy"
+
+[package.metadata.copper]
+kind = "task"
+domains = ["algorithm/control"]
+environments = ["host"]
+
+[features]
+default = ["std"]
+std = []
+
+[dev-dependencies]
+serde_json = { workspace = true, features = ["std"] }
